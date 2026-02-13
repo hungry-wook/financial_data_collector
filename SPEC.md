@@ -45,6 +45,8 @@
 * 기업 법인(Legal Entity)과 상장된 거래 대상(Listed Security)은 분리된 identity로 관리한다.
 * 가격 데이터는 Listed Security 기준으로만 귀속된다.
 * 합병/분할/재상장 시 새로운 Listed Security를 생성한다.
+* 법인 identity는 legal_entities 테이블로, 증권 identity는 symbols 테이블로 각각 관리한다.
+* 법인과 증권의 N:M 관계는 symbol_entity_mapping으로 연결한다.
 
 ### Append-only ledger
 
@@ -53,26 +55,40 @@
 ## GLOBAL PIPELINE OVERVIEW
 
 ```
-[Collector]
+[Trading Calendar Sync]
     ↓
-[Normalizer]
+[Symbol Collector]
     ↓
-[Validator]
-    ↓
-[Raw Storage]
-    ↓
-[Event Ledger]
-    ↓
-[Adjustment Engine]
-    ↓
-[Factor Engine]
-    ↓
-[Price / Factor Views]
-    ↓
-[Backtest / Strategy]
+[Price Collector] ←──→ [Event Collector (DART)]
+    ↓                        ↓
+[Normalizer]           [Normalizer]
+    ↓                        ↓
+[Validator]            [Validator]
+    ↓                        ↓
+[Raw Storage]          [Event Ledger]
+    ↓                        ↓
+    └────────┬───────────────┘
+             ↓
+    [Adjustment Engine]
+             ↓
+    [Factor Engine]
+             ↓
+    [Price / Factor Views]
+             ↓
+    [Backtest / Strategy]
 ```
 
 모든 단계는 재실행 가능. 중간 실패 후 이어서 실행 가능
+
+**ORCHESTRATION ORDER (MANDATORY):**
+
+1. trading_calendar sync (최상위 의존성)
+2. symbol collector (신규/상폐/변경 감지)
+3. price collector + event collector (병렬 가능)
+4. normalization + validation
+5. adjustment engine (변경 감지 시)
+6. factor engine
+7. view materialization
 
 ## DATA SOURCES
 
@@ -116,7 +132,132 @@
 * 고유번호 : DART에 등록되어있는 공시대상회사의 고유번호,회사명,종목코드, 최근변경일자를 파일로 제공합니다.
   * https://opendart.fss.or.kr/guide/detail.do?apiGrpCd=DS001&apiId=2019018
 
+### KRX API RATE LIMIT STRATEGY
+
+KRX OpenAPI는 일일 호출 한도가 있으며, 이를 고려한 수집 전략이 필요하다.
+
+**수집 단위:**
+
+KRX API는 "날짜별 전종목 조회"를 지원한다.
+1회 API 호출 = 1 market + 1 date의 전 종목 시세.
+종목별 수집이 아닌 (market, trading_date) 단위 수집을 기본으로 한다.
+
+**호출량 추정:**
+
+* 연간 거래일 약 250일
+* 2010~현재 약 4,000 거래일
+* full rebuild 시 약 4,000 호출 필요 (market 당)
+
+**Rate Limiter:**
+
+* Token bucket: 1 req/sec, burst 5
+* 일일 한도 90% 도달 시 수집 중단, 다음 날 이어서 실행
+* 한도 소진 시 ingestion_batch.status = 'PARTIAL'
+
+**Retry:**
+
+* HTTP 429 / 5xx → exponential backoff (1s, 2s, 4s, max 30s)
+* 3회 실패 → 해당 (market, date) skip, failure 로그 기록
+* 다음 배치에서 미수집 날짜 자동 감지 후 재시도
+
+### TRADING CALENDAR COLLECTION STRATEGY
+
+캘린더는 전체 파이프라인의 최상위 의존성이다.
+캘린더가 없는 기간의 가격/이벤트 수집은 거부한다 (FAIL, not SKIP).
+
+**SOURCE 1 (PRIMARY): KRX 휴장일 정보**
+
+* URL: open.krx.co.kr 휴장일 페이지
+* 수집 방식: HTTP scraping (HTML 파싱)
+* 주기: 월 1회 (연초에 연간 일정 공시됨)
+* 미래 5년치 제공
+
+**SOURCE 2 (FALLBACK / VALIDATION):**
+
+* 실제 가격 데이터 존재 여부로 역추론
+* prices_raw에 데이터가 있는 날 = 거래일
+* 과거 캘린더 검증용
+
+**BOOTSTRAP RULE:**
+
+1. 시스템 최초 구동 시 trading_calendar를 먼저 수집
+2. Price/Event collector는 trading_calendar 존재를 전제
+3. 캘린더가 없는 기간의 수집은 거부 (FAIL, not SKIP)
+
+**CALENDAR GENERATION:**
+
+* 기준 기간의 모든 날짜를 생성
+* 주말 → is_open = FALSE
+* 공휴일 목록 매칭 → is_open = FALSE
+* 나머지 → is_open = TRUE
+* 각 market(KOSPI, KOSDAQ)에 대해 동일하게 생성 (현재 한국 시장은 동일 캘린더이나, 구조적으로 분리)
+
+**VALIDATION:**
+
+* 수집된 가격 데이터와 캘린더 교차 검증
+* 거래일인데 가격 없음 → warning (수집 실패 or 전종목 거래정지)
+* 휴장일인데 가격 있음 → critical alert (캘린더 오류)
+
 ## DATABASE SCHEMA (CORE)
+
+### legal_entities
+
+기업 법인(Legal Entity) 단위 identity.
+DART corp_code 기반의 법인 수준 관리.
+하나의 법인은 시간에 따라 여러 symbol을 가질 수 있다.
+
+```sql
+corp_id             UUID
+-- 시스템 내부 법인 identity
+-- PK
+
+dart_corp_code      VARCHAR
+-- DART 고유번호 (8자리)
+-- UNIQUE (단, 법인 합병으로 소멸 가능)
+
+corp_name           VARCHAR
+-- 법인명 (최신 스냅샷)
+
+biz_reg_no          VARCHAR NULL
+-- 사업자등록번호 (보조 식별자)
+
+source              VARCHAR
+-- 데이터 출처 (DART 등)
+
+collected_at        TIMESTAMP
+
+PK: (corp_id)
+UNIQUE: (dart_corp_code)
+```
+
+### symbol_entity_mapping
+
+symbol(Listed Security)과 legal_entity(법인)의 연결.
+합병/분할 시 하나의 법인이 여러 symbol을 가지거나
+하나의 symbol이 법인 변경될 수 있다.
+
+```sql
+symbol_id           UUID    -- symbols.symbol_id FK
+corp_id             UUID    -- legal_entities.corp_id FK
+start_date          DATE    -- 관계 유효 시작일 (inclusive)
+end_date            DATE    -- 종료일 (exclusive, NULL = 현재)
+source              VARCHAR
+collected_at        TIMESTAMP
+
+PK: (symbol_id, corp_id, start_date)
+```
+
+**보통주-우선주 관계 표현 예시:**
+
+```
+삼성전자 (법인: corp_id = samsung_corp)
+  ├── symbol: 005930 (보통주, KOSPI)
+  └── symbol: 005935 (우선주, KOSPI)
+
+symbol_entity_mapping:
+  (005930_symbol_id, samsung_corp, 1975-06-11, NULL)
+  (005935_symbol_id, samsung_corp, 1989-10-31, NULL)
+```
 
 ### prices_raw
 
@@ -192,6 +333,7 @@ logical_hash    VARCHAR
 
 ingestion_batch_id UUID
 -- 수집 실행 단위 식별자
+-- ingestion_batches.batch_id FK
 -- 동일 배치 내 수집된 row들을 논리적으로 묶기 위함
 -- 재수집 / 장애 복구 / audit 시점 재현에 사용
 
@@ -272,6 +414,50 @@ lock_key = hash(symbol_id, date, source)
 
 어느 방식이든 DB 레벨에서 atomicity가 보장되어야 한다.
 
+### ingestion_batches
+
+수집 실행 단위 메타데이터.
+prices_raw.ingestion_batch_id FK 대상.
+
+```sql
+batch_id            UUID
+-- 수집 실행 단위 식별자
+-- PK
+
+collector_type      VARCHAR
+-- KRX_PRICE / KRX_SYMBOL / DART_EVENT
+
+started_at          TIMESTAMP
+finished_at         TIMESTAMP NULL
+
+status              VARCHAR
+-- RUNNING / COMPLETED / FAILED / PARTIAL
+
+target_start_date   DATE
+-- 수집 대상 시작일
+
+target_end_date     DATE
+-- 수집 대상 종료일
+
+total_count         INTEGER
+-- 수집 시도 건수
+
+success_count       INTEGER
+failure_count       INTEGER
+retry_count         INTEGER
+
+error_summary       JSONB NULL
+-- 실패 상세 (최대 N건 샘플)
+
+collector_version   VARCHAR
+-- collector 코드 버전
+
+PK: (batch_id)
+
+-- INDEX: (collector_type, started_at DESC)
+-- 최근 수집 이력 조회 최적화
+```
+
 ### corp_actions
 
 모든 corporate action 이벤트 원장 (ledger)
@@ -304,14 +490,16 @@ event_id        VARCHAR
 --   * effective_date (if exists)
 --   * 주요 경제 파라미터 (ratio, cash_amount 등)
 --   * 공시 원문 content hash (가능한 경우)
-
 --
 -- STRONG RECOMMENDATION:
 -- DART 기반 이벤트의 경우 공시 원문(content) hash를
 -- fingerprint 구성 요소에 포함하는 것을 사실상 REQUIRED로 간주한다.
 -- 이를 포함하지 않을 경우, collector 로직 변경 시
 -- 동일 경제 이벤트에 대해 event_id 불안정성이 발생할 수 있다.
--- PK
+
+event_version   INTEGER
+-- 동일 event_id에 대한 정정/업데이트 순번
+-- 1부터 증가
 
 code            VARCHAR
 -- 이벤트 수집 당시의 거래소 종목 코드
@@ -320,23 +508,26 @@ code            VARCHAR
 
 event_type      VARCHAR
 -- Corporate action 유형
--- 예: SPLIT, REVERSE_SPLIT, BONUS, RIGHTS,
---     CASH_DIVIDEND, MERGER, SPINOFF,
---     CB_ISSUE, BW_ISSUE 등
 -- Adjustment Engine / Factor Engine 분기 기준
 -- 엔진 로직은 반드시 event_type 기준으로만 동작해야 함
--- EVENT TYPE CLASSIFICATION RULE:
--- 아래 이벤트만 Price Adjustment Engine에서 처리 가능
+--
+-- EVENT TYPE CLASSIFICATION:
+--
+-- Price Adjustment Engine 처리 가능:
 --   * SPLIT
 --   * REVERSE_SPLIT
 --   * BONUS
+--   * STOCK_DIVIDEND
+--   * CAPITAL_REDUCTION (무상감자)
 --
--- 그 외 이벤트 (RIGHTS, MERGER, SPINOFF 등)는
--- 가격 조정이 아닌 Position / Cashflow 이벤트로 처리해야 한다.
-
-event_version   INTEGER
--- 동일 event_id에 대한 정정/업데이트 순번
--- 1부터 증가
+-- Position / Cashflow Engine 처리:
+--   * CASH_DIVIDEND
+--   * RIGHTS
+--   * MERGER
+--   * SPINOFF
+--   * CB_ISSUE
+--   * BW_ISSUE
+--   * PAID_CAPITAL_REDUCTION (유상감자)
 
 announce_date   DATE
 -- 공시 발표일 (information release date)
@@ -354,7 +545,9 @@ ex_date         DATE
 
 effective_date  DATE
 -- 가격에 실제로 adjustment factor가 적용되기 시작하는 날짜
--- Adjustment Engine이 보정계수를 누적 적용할 때 사용하는 기준일
+-- Adjustment Engine이 보정계수를 누적 적용할 때 사용하는 유일한 기준일
+-- effective_date 이전의 모든 과거 가격에 factor를 소급 적용한다.
+-- effective_date 당일 가격에는 해당 이벤트의 factor를 적용하지 않는다.
 
 -- EFFECTIVE DATE RULE (PRIORITY ORDER):
 -- 1) source가 effective_date를 명시한 경우
@@ -362,6 +555,7 @@ effective_date  DATE
 -- 2) source가 ex_date만 제공한 경우
 --    → effective_date = next trading day (calendar 기준)
 -- 3) 둘 다 없는 경우
+--    → effective_date = NULL
 --    → adjustment_status = SKIPPED_INSUFFICIENT_DATA
 
 -- EFFECTIVE DATE PRESET (ENGINE-LEVEL)
@@ -387,7 +581,6 @@ effective_date  DATE
 --
 -- 이를 기록하지 않은 snapshot은 INVALID로 간주한다.
 
---
 -- AUDIT NOTE:
 -- snapshot metadata에 기록된 effective_date 관련 설정은
 -- Adjustment Engine이 실제 적용한 규칙과 반드시 일치해야 하며,
@@ -397,7 +590,6 @@ effective_date  DATE
 -- effective_date_source = DERIVED_NEXT_TRADING_DAY 인 경우
 -- Adjustment Engine은 기본적으로 이를 사용하지 않는다.
 -- 전략 또는 엔진 옵션에서 명시적으로 opt-in 해야만 적용 가능하다.
--- Adjustment Engine은 기본적으로 이를 사용하지 않는다.
 -- 단, event_type ∈ {SPLIT, REVERSE_SPLIT, BONUS} 인 경우에 한해
 -- engine-level option으로 일괄 opt-in을 허용할 수 있다.
 -- (default = OFF)
@@ -405,14 +597,12 @@ effective_date  DATE
 -- 역할 구분:
 --   announce_date  : 정보 인지 가능 시점 (factor / signal용)
 --   ex_date        : 경제적 권리 분리일 (시장 이벤트 발생일)
---   effective_date : 가격 보정 시작 기준일 (엔진 기준)
+--   effective_date : 가격 보정 시작 기준일 (엔진의 유일한 기준)
 
 -- 주의:
 --   합병, 분할, 종목 변경 등 일부 이벤트는
 --   ex_date와 effective_date가 다를 수 있음
---   따라서 effective_date는 계산하지 말고
---   수집된 값을 그대로 저장
---   effective_date는 명시적 규칙에 의해서만 계산될 수 있다.
+--   effective_date는 명시적 규칙에 의해서만 결정될 수 있다.
 --   암묵적 계산은 금지한다.
 
 effective_date_source VARCHAR
@@ -448,7 +638,10 @@ event_usability_flags JSONB
 --   "position": false
 -- }
 
-PK: (event_id)
+PK: (event_id, event_version)
+
+-- UNIQUE INDEX ON (source_event_id, event_version)
+-- 최신 버전 조회 최적화
 ```
 
 #### VERSIONING RULE
@@ -465,6 +658,25 @@ For snapshot (snapshot_as_of_date, snapshot_time):
 2. collected_at <= snapshot_time
 3. event_version = max(event_version)
 
+**공통 CTE (모든 View에서 재사용):**
+
+```sql
+-- resolved_corp_actions
+WITH ranked AS (
+    SELECT *,
+        ROW_NUMBER() OVER (
+            PARTITION BY event_id
+            ORDER BY event_version DESC
+        ) AS rn
+    FROM corp_actions
+    WHERE announce_date <= :snapshot_as_of_date
+      AND collected_at  <= :snapshot_data_cutoff_time
+)
+SELECT * FROM ranked WHERE rn = 1
+```
+
+이 CTE를 corp_actions를 소비하는 모든 View에서 재사용한다.
+
 #### DOWNSTREAM CONSUMPTION RULE
 
 모든 View / Engine은 기본적으로
@@ -479,17 +691,20 @@ event_version은 시간 개념이 아니며
 ### corp_action_entities
 
 ```sql
-event_id        VARCHAR
-symbol_id       UUID NULL
-role            VARCHAR  -- SOURCE / TARGET / NEW
-entity_ref_type     VARCHAR -- SYMBOL_ID | DART_CORP_CODE | TEMP_ID
-entity_ref_value    VARCHAR -- symbol_id가 없는 경우 사용
+event_id            VARCHAR
+event_version       INTEGER
+symbol_id           UUID NULL
+role                VARCHAR  -- SOURCE / TARGET / NEW
+entity_ref_type     VARCHAR  -- SYMBOL_ID | DART_CORP_CODE | TEMP_ID
+entity_ref_value    VARCHAR  -- symbol_id가 없는 경우 사용
+
+PK: surrogate key 사용 권장
 ```
 
 **PK RULE:**
-symbol_id가 존재하는 경우: (event_id, symbol_id)
-symbol_id가 없는 경우: (event_id, entity_ref_type, entity_ref_value)
-물리 PK 구현 시 surrogate key 사용을 권장한다.
+
+symbol_id가 존재하는 경우: UNIQUE (event_id, event_version, symbol_id)
+symbol_id가 없는 경우: UNIQUE (event_id, event_version, entity_ref_type, entity_ref_value)
 
 하나의 corporate action은
 여러 symbol identity에 동시에 영향을 줄 수 있다.
@@ -549,12 +764,13 @@ resolved_at <= snapshot_data_cutoff_time
 
 #### corp_action_ratio
 
-**(A) SPLIT / BONUS / MERGE (비율형)**
+**(A) SPLIT / BONUS / STOCK_DIVIDEND / CAPITAL_REDUCTION (비율형)**
 
 ```sql
 event_id        VARCHAR
--- corp_actions.event_id 참조
--- event_type ∈ {SPLIT, REVERSE_SPLIT, BONUS}
+event_version   INTEGER
+-- corp_actions FK (event_id, event_version)
+-- event_type ∈ {SPLIT, REVERSE_SPLIT, BONUS, STOCK_DIVIDEND, CAPITAL_REDUCTION}
 -- 단순 비율 기반 주식수 / 가격 변환 이벤트
 
 ratio_num       DECIMAL(20,10)
@@ -564,6 +780,8 @@ ratio_num       DECIMAL(20,10)
 ratio_den       DECIMAL(20,10)
 -- 분모 (before)
 -- 예: 1:5 액면분할 → ratio_den = 1
+
+PK: (event_id, event_version)
 ```
 
 **해석 규칙**
@@ -571,6 +789,14 @@ ratio_den       DECIMAL(20,10)
 * 신주식수 = 기존주식수 × (ratio_num / ratio_den)
 * 가격 조정 = 역비율 적용
 * adjustment_factor = ratio_den / ratio_num
+
+**event_type별 비율 해석:**
+
+* SPLIT: 1:5 액면분할 → ratio_num = 5, ratio_den = 1, adjustment_factor = 1/5
+* REVERSE_SPLIT: 5:1 병합 → ratio_num = 1, ratio_den = 5, adjustment_factor = 5/1
+* BONUS: 10% 무상증자 → ratio_num = 11, ratio_den = 10
+* STOCK_DIVIDEND: 10% 주식배당 → ratio_num = 11, ratio_den = 10, adjustment_factor = 10/11
+* CAPITAL_REDUCTION (무상감자): 5:1 감자 → ratio_num = 1, ratio_den = 5, adjustment_factor = 5/1 (가격 상승 방향)
 
 **주의**
 
@@ -583,7 +809,8 @@ ratio_den       DECIMAL(20,10)
 
 ```sql
 event_id        VARCHAR
--- corp_actions.event_id 참조
+event_version   INTEGER
+-- corp_actions FK (event_id, event_version)
 -- event_type = CASH_DIVIDEND
 
 cash_amount     DECIMAL(20,6)
@@ -600,6 +827,8 @@ record_date     DATE
 pay_date        DATE
 -- 실제 현금 지급일
 -- total-return 계산 시 cashflow 타이밍용
+
+PK: (event_id, event_version)
 ```
 
 **가격 처리 방식 (전략 선택)**
@@ -621,7 +850,8 @@ pay_date        DATE
 
 ```sql
 event_id                VARCHAR
--- corp_actions.event_id 참조
+event_version           INTEGER
+-- corp_actions FK (event_id, event_version)
 -- event_type = RIGHTS
 
 rights_ratio            DECIMAL(20,10)
@@ -636,6 +866,8 @@ theoretical_ex_price    DECIMAL(20,6)
 
 adjustment_allowed BOOLEAN DEFAULT FALSE
 -- RIGHTS 이벤트는 Adjustment Engine에서 가격 보정이 기본적으로 금지된다.
+
+PK: (event_id, event_version)
 ```
 
 **주의**
@@ -664,16 +896,21 @@ raw ledger로부터 항상 재계산 가능해야 한다.
 
 ```sql
 event_id        VARCHAR
--- corp_actions.event_id 참조
+event_version   INTEGER
+-- corp_actions FK (event_id, event_version)
 -- event_type ∈ {MERGER, SPINOFF}
 
-target_symbol_id UUID
+target_symbol_id UUID NULL
 -- 합병 상대 또는 신설 법인 symbol_id
 -- code 대신 identity 기준 사용
+-- SPINOFF에서 아직 존재하지 않는 symbol인 경우 NULL
+-- → corp_action_entities.entity_ref_*로 참조
 
 exchange_ratio  DECIMAL(20,10)
 -- 교환 비율
 -- 예: A 1주 → B 0.35주
+
+PK: (event_id, event_version)
 ```
 
 **처리 원칙**
@@ -695,7 +932,8 @@ exchange_ratio  DECIMAL(20,10)
 
 ```sql
 event_id            VARCHAR
--- corp_actions.event_id 참조
+event_version       INTEGER
+-- corp_actions FK (event_id, event_version)
 -- event_type ∈ {CB_ISSUE, BW_ISSUE}
 
 instrument_type     VARCHAR
@@ -708,6 +946,8 @@ strike_price        DECIMAL(20,6)
 -- BW 행사가 (CB는 NULL)
 
 maturity_date       DATE
+
+PK: (event_id, event_version)
 ```
 
 **주의**
@@ -720,6 +960,35 @@ maturity_date       DATE
 1. Fully-diluted shares 팩터 계산
 2. 실제 전환 시점에 adjustment 적용
 
+#### corp_action_capital_reduction
+
+**(F) 감자 (유상감자 전용)**
+
+```sql
+event_id            VARCHAR
+event_version       INTEGER
+-- corp_actions FK (event_id, event_version)
+-- event_type = PAID_CAPITAL_REDUCTION
+
+ratio_num           DECIMAL(20,10)
+-- 감자 후
+
+ratio_den           DECIMAL(20,10)
+-- 감자 전
+
+refund_per_share    DECIMAL(20,6)
+-- 1주당 환급금
+
+currency            VARCHAR
+
+PK: (event_id, event_version)
+```
+
+**ROUTING RULE:**
+
+* 무상감자(CAPITAL_REDUCTION) → corp_action_ratio에 저장, Price Adjustment Engine에서 ratio 기반 처리
+* 유상감자(PAID_CAPITAL_REDUCTION) → corp_action_capital_reduction에 저장, Position Engine (주식 수 감소) + Cashflow Engine (현금 환급)
+
 ### symbols
 
 ```sql
@@ -727,17 +996,36 @@ symbol_id       UUID
 -- 시스템 내부 상장 거래 대상 identity (Listed Security)
 -- 가격, 거래, 조정은 모두 이 identity 기준
 -- 법인 단위 identity와 분리 관리됨
-symbol_id = hash(
-    DART_corp_code +
-    first_list_date +
-    legal_entity_type
-)
+
+-- SYMBOL_ID GENERATION RULE:
+-- symbol_id = deterministic_hash(
+--     dart_corp_code
+--     + first_list_date
+--     + market           -- KOSPI / KOSDAQ
+--     + security_type    -- COMMON / PREFERRED / ...
+-- )
+--
+-- dart_corp_code가 없는 경우 (최초 수집 시):
+-- symbol_id = deterministic_hash(
+--     krx_code
+--     + first_list_date
+--     + market
+--     + security_type
+-- )
+-- 이후 dart_corp_code 확보 시 symbol_id를 변경하지 않는다.
+-- 대신 symbol_entity_mapping으로 법인 연결만 추가한다.
 
 current_code    VARCHAR
 -- 현재 KRX 코드 (편의용)
 
 name            VARCHAR
 -- 현재 종목명 (스냅샷)
+
+market          VARCHAR
+-- KOSPI / KOSDAQ
+
+security_type   VARCHAR
+-- COMMON / PREFERRED
 
 list_date       DATE
 -- 최초 상장일
@@ -752,6 +1040,7 @@ PK: (symbol_id)
 하나의 법인(Legal Entity)은 시간에 따라
 여러 개의 symbols(symbol_id)를 가질 수 있다.
 (합병, 분할, 재상장 등)
+법인과 symbol의 관계는 symbol_entity_mapping으로 관리한다.
 
 ### symbol_code_history
 
@@ -841,6 +1130,38 @@ is_open     BOOLEAN
 PK: (date, market)
 ```
 
+### pending_symbol_prices
+
+symbol_id 미확정 상태의 가격 데이터 임시 저장소.
+symbol collector보다 price collector가 먼저 새 종목을 발견했을 때 사용한다.
+
+```sql
+code                VARCHAR     -- KRX 종목 코드
+date                DATE
+market              VARCHAR
+open                BIGINT
+high                BIGINT
+low                 BIGINT
+close               BIGINT
+volume              BIGINT
+value               BIGINT
+source              VARCHAR
+collected_at        TIMESTAMP
+ingestion_batch_id  UUID
+resolved_symbol_id  UUID NULL   -- backfill 시 채워짐
+resolved_at         TIMESTAMP NULL
+
+PK: (code, date, source, collected_at)
+```
+
+**BACKFILL RULE:**
+
+symbol collector 실행 후
+pending_symbol_prices.code와 symbol_code_history.code 매칭
+→ resolved_symbol_id 기록
+→ prices_raw로 INSERT (정상 파이프라인 진입)
+→ pending_symbol_prices는 resolved 상태로 보존 (audit용)
+
 ## COLLECTOR LAYER
 
 ### 공통 인터페이스
@@ -859,11 +1180,10 @@ class Collector:
 **동작**
 
 * trading_calendar에서 거래일 조회
-* repository.get_symbol_list()
-  * 이미 수집된 마지막 날짜 이후부터 실행
-* 수집 단위는 (symbol_id, trading_date)
-* code는 symbol_code_history를 통해 조회
+* 수집 단위는 (market, trading_date) — 1회 API 호출로 해당 시장 전 종목 시세 수집
+* 수집된 code가 symbol_code_history에 없는 경우 → pending_symbol_prices에 임시 저장
 * 실패 시 retry, 실패 로그 기록
+* rate limiter 적용 (1 req/sec, burst 5)
 
 ### KRX SYMBOL COLLECTOR
 
@@ -873,6 +1193,7 @@ class Collector:
 * 시장 이동
 
 → symbols 테이블 업데이트
+→ pending_symbol_prices backfill 트리거
 
 ### DART EVENT COLLECTOR
 
@@ -880,9 +1201,11 @@ class Collector:
 
 * 액면분할 / 병합
 * 무상증자 / 유상증자
-* 배당
+* 주식배당
+* 현금배당
 * 합병 / 분할
 * CB / BW
+* 감자 (유상/무상)
 
 **중요 원칙**
 
@@ -904,6 +1227,10 @@ class Collector:
 * 이벤트 타입 정규화
 * event_id 생성
   * hash(source_event_id (DART rcept_no) OR (source + code + announce_date + event_type + sequence))
+* effective_date 파생 (EFFECTIVE DATE RULE에 따라)
+  * source가 effective_date 명시 → effective_date_source = 'EXPLICIT_SOURCE'
+  * source가 ex_date만 제공 → effective_date = next_trading_day(ex_date, calendar), effective_date_source = 'DERIVED_NEXT_TRADING_DAY'
+  * 둘 다 없음 → effective_date = NULL, effective_date_source = 'UNKNOWN'
 
 ## VALIDATION
 
@@ -959,9 +1286,20 @@ validation_status는 이벤트의 경제적 복잡도를 표현하며,
 
 **backward adjustment**
 
-* ex_date + 1일부터 적용
-* 이벤트는 누적 곱으로 적용
-  * adjusted_price(date) = raw_price(date) * Π adjustment_factor(code, t > date)
+Adjustment Engine은 오직 effective_date만을 기준으로 동작한다.
+
+```
+adjusted_price(price_date, symbol_id) =
+    raw_price(price_date, symbol_id)
+    * Π(af.adjustment_factor
+        FROM adjustment_factors af
+        WHERE af.symbol_id = :symbol_id
+          AND af.effective_date > price_date
+          AND af.adjustment_status = 'APPLIED')
+```
+
+effective_date 이전의 모든 과거 가격에 factor를 소급 적용한다.
+effective_date 당일 가격에는 해당 이벤트의 factor를 적용하지 않는다.
 
 **DERIVED EFFECTIVE DATE SAFETY CHECK (RECOMMENDED):**
 
@@ -977,6 +1315,7 @@ Adjustment Engine은 반드시 다음을 수행해야 한다.
 
 ```python
 if event.type in RATIO_EVENTS:
+    # SPLIT, REVERSE_SPLIT, BONUS, STOCK_DIVIDEND, CAPITAL_REDUCTION
     apply_ratio(event)
 elif event.type == CASH_DIVIDEND:
     apply_dividend(event)
@@ -1013,6 +1352,7 @@ Adjustment Engine은 다음 조건을 반드시 만족해야 한다:
 ```sql
 symbol_id
 event_id
+event_version
 snapshot_id
 adjustment_status
 adjustment_skip_reason
@@ -1035,7 +1375,7 @@ retention 정책은 auditability를 해치지 않는 범위에서
 
 ### HARD RULE
 
-* event_type = RIGHTS, MERGER, SPINOFF
+* event_type = RIGHTS, MERGER, SPINOFF, PAID_CAPITAL_REDUCTION
 * → Adjustment Engine은 무조건 SKIP
 
 ## ADJUSTMENT FACTOR TABLE (EVENT-LEVEL)
@@ -1043,8 +1383,11 @@ retention 정책은 auditability를 해치지 않는 범위에서
 ```sql
 symbol_id
 event_id
+event_version
 effective_date
 adjustment_factor
+adjustment_status
+adjustment_skip_reason
 ```
 
 **PRECISION RULE (MANDATORY):**
@@ -1062,24 +1405,17 @@ rounding은 View 레이어의 책임이며
 Raw / Event / Adjustment Factor 테이블에는
 절대 rounding 된 값이 저장되어서는 안 된다.
 
-```sql
-adjustment_status
-- APPLIED
-- SKIPPED_REQUIRES_POSITION_ENGINE
-- SKIPPED_INSUFFICIENT_DATA
-
-adjustment_skip_reason
-```
-
 **NOTE:**
 
 누적 adjustment factor는 View 레이어에서 다음 규칙으로 계산한다.
 adjustment applies to all price dates strictly BEFORE effective_date
 
 ```
-cumulative_factor(price_date) =
+cumulative_factor(price_date, symbol_id) =
     Π(adjustment_factor
-      WHERE event.effective_date > price_date)
+      WHERE symbol_id = :symbol_id
+        AND effective_date > price_date
+        AND adjustment_status = 'APPLIED')
 ```
 
 effective_date 당일 가격에는 해당 이벤트를 적용하지 않는다.
@@ -1102,6 +1438,7 @@ daily cumulative adjustment materialized view를 둘 수 있다.
 ### factor_snapshot
 
 ```sql
+snapshot_id
 date
 symbol_id
 code
@@ -1109,6 +1446,8 @@ factor_name
 factor_value
 computed_at
 computed_with_version
+
+PK: (snapshot_id, date, symbol_id, factor_name)
 ```
 
 **RULE:**
@@ -1161,6 +1500,11 @@ snapshot_data_cutoff_time    -- 해당 snapshot에서 사용 가능한 최대 co
 price_view_version           -- price view 로직 버전
 factor_view_version          -- factor view 로직 버전
 adjustment_engine_version    -- adjustment engine 로직 버전
+effective_date_preset        -- 사용된 effective_date preset
+derived_effective_date_opt_in BOOLEAN -- derived effective_date 사용 여부
+status                       -- ACTIVE / STALE / REBUILDING / ARCHIVED
+superseded_by                UUID NULL -- 이 snapshot을 대체한 새 snapshot_id
+staleness_reason             VARCHAR NULL
 created_at                   -- snapshot 생성 시각
 ```
 
@@ -1179,10 +1523,46 @@ git commit hash 또는 deterministic build hash 사용을 권장한다.
 * adjustment engine version
 * price view version
 * factor view version
+* effective_date_preset
+* derived_effective_date_opt_in
 
 데이터 재수집 여부와 무관하게
 동일 snapshot_id를 사용한 백테스트 결과는
 반드시 완전히 재현 가능해야 한다.
+
+#### Snapshot Lifecycle Management
+
+**STATES:**
+
+* ACTIVE : 현재 유효, 백테스트 사용 가능
+* STALE : 엔진/뷰 버전 변경으로 재생성 필요
+* REBUILDING : 재생성 진행 중
+* ARCHIVED : 보관용 (재현 목적으로만 유지)
+
+**STALENESS DETECTION:**
+
+snapshot이 STALE가 되는 조건:
+
+1. adjustment_engine_version != 현재 엔진 버전
+2. price_view_version != 현재 뷰 버전
+3. factor_view_version != 현재 팩터 뷰 버전
+
+```sql
+-- 매 엔진/뷰 배포 시 자동 감지
+SELECT snapshot_id
+FROM view_snapshot_metadata
+WHERE status = 'ACTIVE'
+  AND (adjustment_engine_version != :current_engine_version
+    OR price_view_version        != :current_price_view_version
+    OR factor_view_version       != :current_factor_view_version)
+```
+
+**REBUILD STRATEGY:**
+
+* STALE snapshot을 자동 삭제하지 않음 (재현성 보존)
+* 동일 (snapshot_as_of_date, snapshot_data_cutoff_time)으로 새 snapshot_id를 생성
+* 이전 snapshot은 ARCHIVED로 전환, superseded_by에 새 snapshot_id 기록
+* 전략이 특정 snapshot_id를 pinning한 경우 → warning 발생, 전략 측에서 명시적 업데이트 필요
 
 ### Price Views (Read-only, Deterministic)
 
@@ -1197,6 +1577,41 @@ git commit hash 또는 deterministic build hash 사용을 권장한다.
 
 * prices_raw 최신 유효 revision만 노출
 * corporate action 미반영
+
+**DETERMINISTIC SELECTION RULE:**
+
+```sql
+-- Step 1: snapshot boundary 적용
+-- Step 2: 동일 (symbol_id, date, source) 내 최신 revision 선택
+-- Step 3: 복수 source 존재 시 source priority 적용
+-- SOURCE PRIORITY RULE:
+-- source 우선순위는 시스템 설정으로 관리한다.
+-- 기본값: 'KRX_OPENDATA' (단일 source 환경에서는 불필요)
+
+WITH snapshot_filtered AS (
+    SELECT *
+    FROM prices_raw
+    WHERE collected_at <= :snapshot_data_cutoff_time
+),
+latest_revision AS (
+    SELECT *,
+        ROW_NUMBER() OVER (
+            PARTITION BY symbol_id, date, source
+            ORDER BY price_revision_seq DESC
+        ) AS rev_rank
+    FROM snapshot_filtered
+),
+deduplicated AS (
+    SELECT *,
+        ROW_NUMBER() OVER (
+            PARTITION BY symbol_id, date
+            ORDER BY source_priority ASC  -- 시스템 설정 기반
+        ) AS src_rank
+    FROM latest_revision
+    WHERE rev_rank = 1
+)
+SELECT * FROM deduplicated WHERE src_rank = 1
+```
 
 #### adjusted_price_view
 
@@ -1215,12 +1630,15 @@ git commit hash 또는 deterministic build hash 사용을 권장한다.
 * SPLIT
 * REVERSE_SPLIT
 * BONUS
+* STOCK_DIVIDEND
+* CAPITAL_REDUCTION
 
 **제외 이벤트:**
 
 * RIGHTS
 * MERGER
 * SPINOFF
+* PAID_CAPITAL_REDUCTION
 
 #### Strategy Safety Default
 
@@ -1249,6 +1667,71 @@ adjusted_price_view에서 기본적으로 제외된다.
 * position_transform
 
 **total return은 전략 레이어에서만 계산된다.**
+
+#### dividend_cashflow (View)
+
+배당 현금흐름 View.
+source of truth: corp_actions + corp_action_dividend.
+전략 레이어가 total return 계산 시 소비한다.
+
+```sql
+symbol_id           UUID
+event_id            VARCHAR
+event_version       INTEGER
+ex_date             DATE        -- 배당락일
+record_date         DATE        -- 권리확정일
+pay_date            DATE        -- 지급일
+cash_amount         DECIMAL(20,6)  -- 1주당 배당금
+currency            VARCHAR
+snapshot_id         UUID
+```
+
+**VIEW DERIVATION RULE:**
+
+```sql
+FROM resolved_corp_actions ca       -- 최신 event_version CTE
+JOIN corp_action_dividend cad
+  ON ca.event_id = cad.event_id
+ AND ca.event_version = cad.event_version
+JOIN corp_action_entities cae
+  ON ca.event_id = cae.event_id
+ AND ca.event_version = cae.event_version
+WHERE ca.event_type = 'CASH_DIVIDEND'
+  AND ca.event_validation_status = 'VALID'
+```
+
+#### position_transform (View)
+
+포지션 변환 이벤트 View.
+MERGER, SPINOFF, RIGHTS 등 주식 수/종목이 변하는 이벤트.
+전략 레이어가 포지션 리밸런싱 시 소비한다.
+
+```sql
+symbol_id               UUID        -- 원래 보유 종목
+event_id                VARCHAR
+event_version           INTEGER
+event_type              VARCHAR     -- MERGER / SPINOFF / RIGHTS / PAID_CAPITAL_REDUCTION
+effective_date          DATE
+transform_type          VARCHAR
+-- EXCHANGE:   old symbol → new symbol (합병/분할)
+-- DILUTION:   기존 주식 수 희석 (유상증자)
+-- EXTINCTION: symbol 소멸 (피합병)
+-- REDUCTION:  주식 수 감소 + 현금 환급 (유상감자)
+
+target_symbol_id        UUID NULL   -- 변환 대상 symbol (NULL = 소멸)
+exchange_ratio          DECIMAL(20,10) NULL  -- 교환 비율
+subscription_price      DECIMAL(20,6) NULL   -- 유상증자 청약가
+refund_per_share        DECIMAL(20,6) NULL   -- 유상감자 환급금
+snapshot_id             UUID
+```
+
+**transform_type 매핑:**
+
+* MERGER → EXCHANGE (target = 합병 후 symbol)
+* SPINOFF → EXCHANGE (target = 신설 symbol)
+* RIGHTS → DILUTION (target = 동일 symbol)
+* PAID_CAPITAL_REDUCTION → REDUCTION (target = 동일 symbol)
+* 피합병 → EXTINCTION (target = NULL)
 
 #### STRATEGY SAFETY CHECKS (RECOMMENDED)
 
@@ -1295,6 +1778,7 @@ computed_at
 prices_raw
 corp_actions
 corp_action_* tables
+ingestion_batches
     → immutable, append-only, source of truth
 ```
 
@@ -1304,6 +1788,8 @@ corp_action_* tables
 raw_price_view
 adjusted_price_view
 daily_cumulative_adjustment_view
+dividend_cashflow
+position_transform
     → deterministic, rebuildable, read-only
 ```
 
@@ -1311,12 +1797,75 @@ daily_cumulative_adjustment_view
 
 ```
 strategy_price_view
-dividend_cashflow
-position_transform
-    → explicit composition only
+    → explicit composition of adjusted_price + dividend_cashflow + position_transform
+```
+
+## POSITION TRANSFORMATION ENGINE
+
+MERGER, SPINOFF, RIGHTS, PAID_CAPITAL_REDUCTION 등
+Adjustment Engine이 처리하지 않는 이벤트를 포지션 수준에서 처리한다.
+
+### 인터페이스
+
+```python
+class PositionTransformEngine:
+    def apply(
+        self,
+        positions: dict[UUID, Decimal],   # symbol_id → shares
+        events: list[PositionTransform],
+        strategy_config: TransformConfig
+    ) -> TransformResult
+
+@dataclass
+class TransformResult:
+    new_positions: dict[UUID, Decimal]
+    cashflows: list[Cashflow]
+    applied_events: list[str]      # event_ids
+    skipped_events: list[str]
+    warnings: list[str]
+```
+
+### 이벤트별 처리 규칙
+
+**MERGER (피합병사 기준):**
+
+* old_shares(source_symbol) → 0
+* new_shares(target_symbol) += old_shares × exchange_ratio
+* fractional shares → cashflow (단수주 대금)
+
+**SPINOFF:**
+
+* old_shares(source_symbol) 유지
+* new_shares(new_symbol) = old_shares × exchange_ratio
+
+**RIGHTS:**
+
+* 참여 시: new_shares += old_shares × rights_ratio, cashflow -= subscription_price × new_shares
+* 미참여 시: 변화 없음 (전략 선택)
+
+**PAID_CAPITAL_REDUCTION:**
+
+* new_shares = old_shares × (ratio_num / ratio_den)
+* cashflow += refund_per_share × old_shares
+
+**EXTINCTION (상폐):**
+
+* old_shares → 0
+* cashflow += final_settlement_price × old_shares (있는 경우)
+
+### Strategy Config Options
+
+```python
+@dataclass
+class TransformConfig:
+    rights_participation: str     # ALWAYS / NEVER / MANUAL
+    fractional_share_handling: str  # CASH_OUT / ROUND_DOWN / ROUND_NEAREST
+    extinction_settlement: str    # USE_LAST_PRICE / USE_SETTLEMENT / ZERO
 ```
 
 ## INCREMENTAL UPDATE LOGIC
+
+### Price Collection
 
 ```python
 last_date = repository.get_last_price_date()
@@ -1324,10 +1873,49 @@ start = last_date + 1
 end = today
 ```
 
-event collector는 정정 공시를 고려하여
+### Gap Detection
 
-* 최근 N년
-* 또는 정정 목록 기반 재수집을 수행한다.
+```python
+expected_dates = trading_calendar
+    WHERE is_open = TRUE
+      AND date BETWEEN :collection_start AND today
+
+collected_dates = SELECT DISTINCT date
+    FROM prices_raw
+    WHERE symbol_id = :sid
+
+missing_dates = expected_dates - collected_dates
+# → missing_dates에 대해 재수집 시도
+```
+
+### KRX Retroactive Correction Detection
+
+**전략 1: Periodic re-validation (RECOMMENDED)**
+
+* 최근 N 거래일 (default: 5)에 대해 매 수집 시 재수집
+* logical_hash 비교로 변경 감지
+* hash 불일치 → 새 revision 자동 생성
+
+**전략 2: KRX 정정 공시 모니터링 (OPTIONAL)**
+
+* 별도 DART 공시 감시로 가격 정정 사실 감지
+
+### Event Collection Strategy
+
+* 기본: 최근 90일 공시 재스캔
+* 정기: 분기 1회 전체 기간 full scan
+* event_id 기반 idempotency로 중복 방지
+* 정정공시: source_event_id 동일 + 내용 변경 → event_version 증가
+
+### Dependency Resolution
+
+price collector가 symbol을 필요로 하므로:
+
+* 신규 상장 종목 → symbol collector가 먼저 실행
+* symbol collector 미실행 상태에서 KRX price API에 모르는 code가 등장 → pending_symbol_prices 큐에 적재
+* 다음 symbol collector 실행 시 해소
+* 해소 전까지 해당 가격 데이터는 code 기반 임시 저장 (symbol_id = NULL)
+* 해소 후 symbol_id backfill
 
 ## FULL REBUILD GUARANTEE
 
@@ -1349,6 +1937,8 @@ event collector는 정정 공시를 고려하여
 * 액면분할 + 무상증자 동시 발생
 * 유상증자 + 합병 연계
 * DART 정정공시 지연
+* 주식배당 + 현금배당 동시 발생
+* 무상감자 후 재상장
 
 **이 경우:**
 
@@ -1363,6 +1953,7 @@ event collector는 정정 공시를 고려하여
 * retry 횟수
 * API 응답 없음
 * 이벤트 적용 로그
+* ingestion_batches 단위 수집 이력
 
 ## OUTPUT GUARANTEE
 
