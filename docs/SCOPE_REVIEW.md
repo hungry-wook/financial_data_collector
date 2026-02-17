@@ -1,93 +1,79 @@
-﻿# 최초 피드백 대비 현재 문서 상태 점검
+﻿# 스코프 점검 (Current Baseline)
 
-## 1. 기준
-검토 기준은 사용자가 처음 제시한 3가지다.
-- A. 가독성 개선 필요사항
-- B. 고도화 가능 영역(P0/P1/P2)
-- C. 기존 섹션 보강 포인트
+## 1. 점검 목적
+1. Phase 1만 구현해도 외부 소비 시스템이 도메인 계산을 시작할 수 있는지 확인
+2. Phase 2~4 확장 시 스키마 마이그레이션이 원활한지 확인
+3. 네이밍/문서 구조가 일반화 원칙에 맞는지 확인
 
-또한 최근 피드백(과설계/누락)도 함께 반영 여부를 확인했다.
+## 2. 점검 결과 요약
+- 네이밍: 일반화됨 (`platform_schema`, `core_market_dataset_v1`, `daily_market_data`)
+- Phase 1 최소셋: 충족
+- 확장성: additive migration 중심으로 설계됨
 
----
+## 3. Phase 1 최소셋 충족 여부
+필수 데이터 도메인:
+1. Instrument Master
+2. Instrument Daily Time Series
+3. Benchmark Daily Time Series
+4. Trading Calendar
+5. Data Quality Issues
 
-## 2. 누락 여부 점검
+판정:
+- 핵심 컬럼과 상태 컬럼이 모두 포함되어 외부 계산 로직에서 추가 수집 없이 시작 가능
+- 결측/오류는 별도 이슈 테이블로 추적 가능
 
-## 2.1 A(가독성) 항목
-- 목차: 반영됨
-- 용어집: 반영됨
-- 다이어그램(ASCII -> Mermaid): 반영됨
-- worked example: 반영됨
-- 섹션 불균형 보강: 반영됨
-- 규칙 ID 부여: 반영됨
-- callout 사용: 반영됨
+요구 데이터 매핑 점검:
+1. 일봉 OHLCV: `daily_market_data.open/high/low/close/volume`
+2. 거래대금: `daily_market_data.turnover_value`
+3. 시가총액: `daily_market_data.market_value`
+4. 거래정지/관리 상태: `daily_market_data.is_trade_halted/is_under_supervision`
+5. 상장기간 정보: `instruments.listing_date/delisting_date`
+6. 벤치마크 지수 일봉: `benchmark_index_data.open/high/low/close`
+7. 거래일 캘린더: `trading_calendar.market_code/trade_date/is_open`
 
-판정: **주요 누락 없음**
+누락 여부:
+- Phase 1 기준 필수 입력 컬럼 누락 없음
 
-## 2.2 B(P0/P1/P2) 항목
-- P0 same-date ordering: 반영됨
-- P0 timezone 정책: 반영됨
-- P0 symbol lifecycle: 반영됨
-- P1 data quality framework: 반영됨
-- P1 circuit breaker: 반영됨
-- P1 recovery playbook: 반영됨
-- P1 testing strategy: 반영됨
-- P2 performance/retention/migration/lineage/index: 반영됨
+## 4. 마이그레이션 적합성 점검
+적합 항목:
+1. Phase 1 PK 구조가 안정적임
+2. Phase 2~4 확장이 신규 테이블 추가 중심
+3. 소비 인터페이스가 버전 뷰(`*_v1`)로 분리됨
+4. run 메타(`collection_runs`)가 초기부터 존재해 운영 확장 경로가 단순함
 
-판정: **기능적 누락 없음**
+주의 항목:
+1. `core_market_dataset_v1` 계약 변경 시 신규 뷰 버전(`v2`) 추가 원칙을 유지해야 함
+2. Phase 3 도메인 확장 시 기존 Phase 1 컬럼 의미를 재해석하지 말아야 함
 
-## 2.3 C(기존 섹션 보강) 항목
-- Design principles 반패턴/근거: 반영됨
-- Data source 매핑: 반영됨
-- Collector 시퀀스/오류: 반영됨
-- Validation 표 형태: 반영됨
-- Adjustment worked example: 반영됨
-- Logging/output guarantee 검증: 반영됨
+## 5. 운영 권고
+1. 릴리즈마다 역호환 쿼리 테스트를 수행
+2. 비호환 변경은 deprecation 기간 후 반영
+3. 소스별 결측 코드 사전을 운영 문서로 고정
 
-판정: **핵심 누락 없음**
+## 6. 전략 계열 적합성 점검 (Phase 1 단독)
+대상:
+- 모멘텀 계열
+- 상대강도(RS) 계열
+- 지수 레짐 필터를 사용하는 크로스섹셔널 전략
 
----
+필수 데이터 요구사항 매핑:
+1. 종목 OHLCV: 충족 (`daily_market_data`)
+2. 거래대금/시가총액: 충족 (`turnover_value`, `market_value`)
+3. 종목 상태 필터(거래정지/관리): 충족 (`is_trade_halted`, `is_under_supervision`)
+4. 상장일수/상장기간 필터: 충족 (`listing_date`, `delisting_date`)
+5. 벤치마크 지수 레짐 계산: 충족 (`benchmark_index_data`)
+6. 거래일 기준 N일 계산: 충족 (`trading_calendar`)
+7. 결측/오류 추적: 충족 (`data_quality_issues`)
 
-## 3. 현재 과한 정보(Phase 1 기준)
-다음은 구현 순서상 Phase 1에서 과할 수 있다.
-1. legal_entities/symbol_entity_mapping/entity_resolution_history 전면 도입
-2. source_priority_policy/conflict_policy (KRX 단일 소스 MVP에서 미사용)
-3. event_type_policy JSON required_fields (이벤트 소수일 때 과함)
-4. ingestion_partitions + stale 이벤트 테이블 전체
+판정:
+- Phase 1만으로 모멘텀/상대강도 전략의 백테스트 입력 데이터 생산 가능
 
-권고:
-- 삭제가 아니라 **Phase 3 이관** 유지
-- 문서/DDL에서 "Phase 1 필수"와 "Phase 2/3 선택" 태그를 명확히 유지
+제약/주의:
+1. 기업행위(분할/병합/배당) 보정이 필요하면 Phase 3 확장 필요
+2. 소스 정정 이력 추적이 필요하면 Phase 2+의 run/partition 메타를 활성 활용해야 함
+3. 생존편향 방지를 위해 마스터 수집 시 \"현재 활성 종목만\" 수집하지 않도록 정책 강제 필요
 
----
-
-## 4. 구현에 필요한데 빠지기 쉬운 정보 (추가 체크)
-1. KRX API 상세 필드명 확정 절차
-- 현재 페이지만으로 완전 추출이 어렵기 때문에 "개발 명세서 다운로드 파일" 기반 확정 절차를 반드시 실행해야 함
-
-2. DART 문서 파싱 규칙
-- report_nm 기반 분류만으로는 ratio/배당 상세가 부족할 수 있어 document.xml 파싱 규칙/테스트가 필수
-
-3. 전략 소비 디폴트
-- 거래정지(untradable), 상폐/재상장(disconnected), universe_asof 기준은 이미 정의되어 있으나, 코드 기본값과 문서 값이 일치하는지 테스트가 필요
-
-4. revision/version 무결성 검증
-- DB 제약만으로 완전 강제가 어려운 영역은 배치 검증 쿼리 + 실패 정책을 구현해야 함
-
----
-
-## 5. 문서별 역할 분리 적정성
-- `DESIGN.md`: 왜 이렇게 설계했는지(원칙/정책)
-- `IMPLEMENTATION_GUIDE.md`: 무엇을 어떤 순서로 구현할지
-- `SCHEMA.md`: 전체 스키마 상세 DDL
-- `SCHEMA_ANNOTATED.sql`: 컬럼별 의미 주석 포함 실행 DDL
-- `API_COLLECTION_PLAN.md`: 공식 페이지 기반 API 수집 계획
-
-판정: **분리 적절**
-
----
-
-## 6. 최종 권고
-1. 즉시 개발은 Phase 1만 적용
-2. Phase 2/3 테이블은 마이그레이션 파일 분리
-3. KRX 명세서 확정 전에는 파싱 키 하드코딩 금지
-4. 회귀 테스트 4종 + snapshot 재현성 테스트를 CI 필수로 지정
+Phase 1 필수 운영 조건:
+1. 과거 상폐 종목 포함 백필(backfill)
+2. 거래일 캘린더 기반 윈도우 계산(단순 달력일 금지)
+3. 결측 row 보간 금지 및 issue 기록 의무화

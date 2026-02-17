@@ -1,307 +1,169 @@
-﻿# 구현 지시서 (Phase별 상세 작업)
+﻿# 구현 지시서 (Ingestion Core)
 
-## 1. 공통 전제
-- DB: PostgreSQL 14+
-- 시간 규칙: DATE=KST 의미, TIMESTAMP=UTC 저장
-- 코드 규칙: raw/event append-only
+## 1. 범위
+본 문서는 데이터 수집 파이프라인 구현 지침이다.
+- 포함: 수집, 정규화, 검증, 적재, 추출
+- 제외: 분석 로직, 실행 로직, 성과 리포트
 
-## 2. 프로젝트 구조 권장
-```text
-src/
-  collectors/
-    krx_price_collector.py
-    krx_symbol_collector.py
-    dart_event_collector.py
-  normalizers/
-    price_normalizer.py
-    event_normalizer.py
-  validators/
-    price_validator.py
-    event_validator.py
-  engines/
-    adjustment_engine.py
-    snapshot_engine.py
-    quality_gate_engine.py
-  repositories/
-    prices_repository.py
-    events_repository.py
-    snapshot_repository.py
-  resolvers/
-    symbol_resolver.py
-  jobs/
-    run_daily_price_job.py
-    run_daily_event_job.py
-    run_snapshot_job.py
-sql/
-  schema_phase1.sql
-  schema_phase2.sql
-  schema_phase3.sql
-tests/
-```
+## 2. Phase 1: Core Dataset 구축
 
-## 3. Phase 1 상세 작업
+## 2.1 Task P1-01: Core 스키마 생성
+테이블:
+1. `instruments`
+- `instrument_id` (PK)
+- `market_code`
+- `listing_date`
+- `delisting_date` (nullable)
 
-## 3.1 Task P1-01: 스키마 생성
-- `SCHEMA.md`의 Phase 1 DDL 적용
-- 마이그레이션 파일 분리:
-  - `001_phase1_core.sql`
-  - `002_phase1_views.sql`
+2. `collection_runs`
+- `run_id` (PK)
+- `pipeline_name, source_name`
+- `window_start, window_end`
+- `status, started_at, finished_at`
 
-검증:
-- 모든 테이블 생성 여부
-- 인덱스 생성 여부
-- view 조회 성공 여부
+3. `daily_market_data`
+- PK: `(instrument_id, trade_date)`
+- `open, high, low, close, volume, turnover_value, market_value`
+- `is_trade_halted, is_under_supervision`
+- `source_name, collected_at, run_id`
 
-## 3.2 Task P1-02: KRX 심볼/캘린더 수집기
+4. `benchmark_index_data`
+- PK: `(index_code, trade_date)`
+- `open, high, low, close`
+- `source_name, collected_at, run_id`
+
+5. `trading_calendar`
+- PK: `(market_code, trade_date)`
+- `is_open, holiday_name`
+- `source_name, collected_at, run_id`
+
+6. `data_quality_issues`
+- PK: `issue_id`
+- `issue_detail, detected_at, run_id`
+
+완료 기준:
+- 테이블/PK/필수 제약 생성 완료
+
+## 2.2 Task P1-02: Instrument Master Collector
 입력:
-- market 목록 (KOSPI/KOSDAQ)
-- 기준일
+- 시장별 종목 마스터 소스
 
 출력:
-- symbols, symbol_code_history, symbol_trading_state, trading_calendar
+- `instruments` upsert
 
-처리 절차:
-1. API 호출
-2. 응답 파싱
-3. code->symbol upsert
-4. 상태 이력 구간 업데이트
+필수 처리:
+- 식별자 정규화
+- 상장/상폐 일자 정규화
+- market 코드 표준화
+- 과거 비활성(상폐) 종목 포함 백필 정책 적용
+
+완료 기준:
+- 대상 기간 거래 종목의 마스터 누락 없음
+
+## 2.3 Task P1-03: Daily Market Collector
+입력:
+- 거래일 범위
+- 종목 목록
+
+출력:
+- `daily_market_data`
+
+필수 처리:
+- OHLCV/거래대금/시가총액 매핑
+- 거래정지/관리 상태 매핑
+- 수집 실패/결측은 `data_quality_issues`에 기록
+- 결측 보간(forward/back fill) 금지
+
+완료 기준:
+- `(instrument_id, trade_date)` 중복 없음
+- 결측/실패 데이터는 이슈 테이블에서 추적 가능
+
+## 2.4 Task P1-04: Benchmark Index Collector
+입력:
+- 거래일 범위
+
+출력:
+- `benchmark_index_data`
+
+필수 처리:
+- 기준 지수 코드 표준화
+- 결측 시 `data_quality_issues` 기록
+
+완료 기준:
+- 요청 기간 데이터 적재 완료
+
+## 2.5 Task P1-05: Trading Calendar Collector
+입력:
+- 시장 코드
+- 기간 범위
+
+출력:
+- `trading_calendar`
+
+필수 처리:
+- 개장/휴장 상태 표준화
+- 휴장 사유(`holiday_name`) 정규화
+- 결측 시 `data_quality_issues` 기록
+
+완료 기준:
+- 대상 기간 거래일 캘린더 적재 완료
+
+## 2.6 Task P1-06: Validation Job
+검증 규칙:
+1. `high >= max(open, close, low)`
+2. `low <= min(open, close, high)`
+3. `volume >= 0`
+4. `turnover_value >= 0` (null 정책 고정)
+5. `market_value >= 0` (null 정책 고정)
+6. 캘린더 개장일인데 종목/지수 데이터가 전면 누락이면 issue 기록
 
 실패 처리:
-- 배치 실패 시 ingestion_batches status=FAILED
-- 부분 실패 시 PARTIAL + error_summary 기록
+- row 삭제 대신 issue 기록 + 검증 상태 태깅
 
-## 3.3 Task P1-03: KRX 가격 수집기
-입력:
-- market/date 파티션
+완료 기준:
+- 일자별 검증 결과 리포트 생성
 
-출력:
-- prices_raw append
-- collection_gap_report
+## 2.7 Task P1-07: Consumer View
+뷰:
+- `core_market_dataset_v1`
+- `benchmark_dataset_v1`
+- `trading_calendar_v1`
 
-핵심 로직:
-1. 응답 row별 symbol resolve
-2. logical_hash 계산
-3. 기존 최신 revision과 비교
-4. 변경 시 price_revision_seq+1 append
-5. 미변경 시 no-op
+포함 컬럼:
+1. `core_market_dataset_v1`
+- Instrument: `instrument_id, market_code, listing_date, delisting_date`
+- Daily: `trade_date, open, high, low, close, volume, turnover_value, market_value, is_trade_halted, is_under_supervision`
+2. `benchmark_dataset_v1`
+- Index: `index_code, trade_date, open, high, low, close`
+3. `trading_calendar_v1`
+- Calendar: `market_code, trade_date, is_open, holiday_name`
 
-결측 처리:
-- MARKET_HOLIDAY
-- SYMBOL_SUSPENDED
-- COLLECTION_FAILURE
-- SOURCE_EMPTY
-- UNKNOWN
+원칙:
+- 계산 파생 컬럼은 뷰에 포함하지 않는다.
+- 소비 시스템에서 도메인 계산을 수행한다.
 
-## 3.4 Task P1-04: DART 이벤트 수집기
-입력:
-- 기간(bgn_de/end_de)
+완료 기준:
+- 외부 시스템이 추가 정규화 없이 바로 사용할 수 있음
 
-출력:
-- corp_actions, corp_action_ratio, corp_action_dividend
+## 3. Phase 2: Reliability
+1. 배치 상태/재시도 정책
+2. 완전성/적시성 품질 지표
+3. 수집 라인리지 표준화
+4. 이슈 코드 사전 고정
 
-로직:
-1. `list.json`으로 후보 수집
-2. report_nm 기반 1차 event_type 분류
-3. 필요 시 `document.xml` 파싱으로 상세 필드 추출
-4. event_id 생성
-5. event_version 판정
+## 4. Phase 3: Domain Expansion
+1. 공시/이벤트 데이터 도메인 추가
+2. 도메인별 스키마 확장
+3. 파생 데이터셋 제공 정책 수립
 
-version 판정:
-- source_event_id 동일 + 경제 필드 변경 -> version++
-- 메타만 변경 -> no-op
+## 5. Phase 4: Platform Hardening
+1. 멀티 소스 병합 정책
+2. 데이터 버전/스냅샷 관리
+3. 파티션 복구 자동화
 
-## 3.5 Task P1-05: Normalizer/Validator
-가격 검증:
-- high/low 논리
-- volume 음수 금지
-- scale=0 강제(MVP)
-
-이벤트 검증:
-- event_type 필수 필드 검증
-- effective_date_source 설정
-- usable_for_* 플래그 결정
-
-## 3.6 Task P1-06: 보정 엔진
-입력:
-- prices_raw_latest
-- corp_actions_latest
-
-출력:
-- adjustment_factors
-- adjustment_evaluation_log
-- daily_cumulative_adjustment
-
-처리:
-1. symbol별 유효 이벤트 로드
-2. same-date 정렬 규칙 적용
-3. factor 계산
-4. RULE-ADJ-006 근사 검증
-5. APPLIED/SKIPPED 로그 기록
-
-## 3.7 Task P1-07: Snapshot 빌드
-입력:
-- 대상 batch 목록
-- cutoff time
-
-출력:
-- view_snapshot_metadata ACTIVE row
-
-필수 저장:
-- included_ingestion_batches_hash
-- include 정책(allow_partial_*)
-- engine/view version
-
-## 3.8 Task P1-08: 기본 품질 게이트
-지표:
-- completeness, timeliness, accuracy
-
-차단:
-- completeness < 0.95 이면 snapshot 생성 차단(기본)
-
-## 3.9 Task P1-09: 테스트 자동화
-필수 회귀:
-1. 삼성전자 50:1 split
-2. split+bonus same-date
-3. cash+stock dividend same-date
-4. ratio inverse 오류 검출
-
----
-
-## 4. Phase 2 상세 작업
-
-## 4.1 Task P2-01: ingestion_partitions 도입
-- 기존 batch 중심 로직을 partition 단위 실행으로 리팩터링
-- partition 상태머신:
-  - PENDING -> RUNNING -> SUCCESS/FAILED
-
-## 4.2 Task P2-02: 파티션 재시도 스케줄러
-- FAILED + next_retry_at<=now 대상 재실행
-- retry_count 상한 초과 시 manual queue
-
-## 4.3 Task P2-03: snapshot stale/supersede 자동화
-stale 감지 입력:
-- cutoff 이전 revision/version 변경
-- version/정책 변경
-
-동작:
-- 기존 snapshot STALE/ARCHIVED
-- 새 snapshot 생성 + superseded_by 연결
-
-## 4.4 Task P2-04: 품질 게이트 고도화
-- ERROR 급증 임계치 기반 strategy view materialization 차단
-- 게이트 판정 로그 저장
-
-## 4.5 Task P2-05: 장애 플레이북 자동화
-- API 장애 유형별 자동 fallback
-- DB 장애 시 안전 재시작(runbook 코드화)
-
----
-
-## 5. Phase 3 상세 작업
-
-## 5.1 Task P3-01: 다중 소스 도입
-- source_priority_policy 테이블 운영
-- raw_price_view에서 source 충돌 정책 적용
-
-## 5.2 Task P3-02: 이벤트 정책 테이블화
-- event_type_policy 기반 required_fields 검증
-- 신규 이벤트 추가 시 코드 변경 최소화
-
-## 5.3 Task P3-03: 엔터티 해석 계층
-- legal_entities, symbol_entity_mapping
-- entity_resolution_history 기록 의무화
-- resolver 서비스 분리
-
-## 5.4 Task P3-04: 수동 개입 원장화
-- corp_action_overrides 운영
-- override 반영 시 새 event_version 강제
-
-## 5.5 Task P3-05: 포지션 변환 엔진
-- RIGHTS/MERGER/SPINOFF/PAID_CAPITAL_REDUCTION 처리
-- strategy_price_view와 명시 연결
-
----
-
-## 6. API -> DB 매핑 상세
-
-## 6.1 KRX 가격
-요청:
-- AUTH_KEY 헤더
-- market/date 파라미터
-
-응답 -> DB:
-- 종목코드: symbol resolver 입력
-- 일자: prices_raw.date
-- 가격/거래량/거래대금: prices_raw 각 필드
-
-주의:
-- KRX 상세 key 명은 개발 명세서 다운로드로 확정
-- 파싱 키를 상수 파일로 고정
-
-## 6.2 DART list.json
-요청:
-- crtfc_key, bgn_de, end_de, page_no...
-
-응답 -> DB:
-- rcept_no -> corp_actions.source_event_id
-- rcept_dt -> announce_date
-- stock_code -> symbol resolve 입력
-- report_nm -> event_type 1차 분류
-
-## 6.3 DART document.xml
-입력:
-- rcept_no
-
-용도:
-- ratio/dividend/effective_date 추가 추출
-
-출력:
-- corp_action_ratio/corp_action_dividend 보강
-
-## 6.4 DART corpCode.xml
-출력:
-- corp_code/stock_code 마스터
-
-용도:
-- symbol resolve 보조
-
----
-
-## 7. 체크리스트
-
-## 7.1 Phase 1 시작 전
-1. KRX 개발 명세서 파일 확보
-2. DART API 키 설정
-3. DB 마이그레이션 준비
-
-## 7.2 Phase 1 완료 전
-1. 회귀 테스트 4종 통과
-2. snapshot 재현성 확인
-3. 결측 사유 분류 확인
-
-## 7.3 Phase 2 완료 전
-1. 파티션 재시도 자동화
-2. stale/supersede 자동화
-3. 게이트 차단 동작 확인
-
-## 7.4 Phase 3 완료 전
-1. 다중 소스 충돌 정책 검증
-2. 신규 이벤트 정책 등록 플로우 검증
-3. resolver 일관성 검증
-
----
-
-## 8. 주니어 개발자를 위한 구현 팁
-1. 먼저 DDL과 repository 테스트부터 만든다.
-2. collector를 완성하기 전에 normalizer/validator 단위 테스트를 작성한다.
-3. 보정 엔진은 이벤트 1개/심볼 1개 데이터셋으로 시작한다.
-4. snapshot hash가 바뀌는 조건을 테스트로 고정한다.
-5. ad-hoc SQL 대신 표준 view를 repository에 캡슐화한다.
-
----
-
-## 9. 산출물 정의
-- 코드: collector/normalizer/validator/engine/repository
-- SQL: phase별 마이그레이션
-- 테스트: unit/integration/regression
-- 운영: 배치 리포트/게이트 리포트
+## 6. Phase 1 체크리스트
+1. Core 컬럼 계약 충족 여부
+2. 상태 컬럼의 일자 결합 여부
+3. 마스터 기간 정보 제공 여부
+4. 지수 데이터 정렬 일관성 여부
+5. 이슈 추적 가능 여부

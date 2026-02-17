@@ -1,28 +1,28 @@
 ﻿# Documentation Index
 
-## 목적별 문서
+## 문서 목록
 - 설계: `ARCHITECTURE.md`
-- API 수집 계획: `API_COLLECTION_PLAN.md`
+- 소스 수집 계획: `API_COLLECTION_PLAN.md`
 - 구현 지시: `IMPLEMENTATION_GUIDE.md`
-- 스키마 설명: `SCHEMA.md`
-- 범위/품질 점검: `SCOPE_REVIEW.md`
-- 실행 DDL: `../sql/schema_annotated.sql`
+- 스키마 계약: `SCHEMA.md`
+- 범위 점검: `SCOPE_REVIEW.md`
+- 실행 DDL: `../sql/platform_schema.sql`
 
 ## 문서 역할
 - `ARCHITECTURE.md`
-: 왜 이렇게 설계했는지(원칙, 트레이드오프, 규칙)
+: 설계 원칙, 책임 경계, Phase 로드맵
 - `API_COLLECTION_PLAN.md`
-: KRX/DART 페이지 기반으로 무엇을 어떻게 수집할지
+: 소스별 수집 범위와 내부 스키마 매핑
 - `IMPLEMENTATION_GUIDE.md`
-: 개발자가 바로 작업 가능한 Task 순서와 완료 기준
+: 개발 순서와 Task별 완료 기준
 - `SCHEMA.md`
-: 테이블/뷰/제약의 설명형 사양
+: 테이블/뷰/제약의 계약 정의
 - `SCOPE_REVIEW.md`
-: 과설계/누락/필수 보강 항목 점검
-- `../sql/schema_annotated.sql`
-: 실제 적용 가능한 SQL(모든 컬럼 주석 포함)
+: 현재 스코프 적합성 점검 결과
+- `../sql/platform_schema.sql`
+: 적용 가능한 기준 DDL
 
 ## 유지보수 규칙
-1. DDL 변경 시 `../sql/schema_annotated.sql` 먼저 수정
-2. 규칙 변경 시 `ARCHITECTURE.md`와 `IMPLEMENTATION_GUIDE.md` 동시 업데이트
-3. API 변경 시 `API_COLLECTION_PLAN.md` 매핑표 먼저 갱신
+1. DDL 변경 시 `../sql/platform_schema.sql` 먼저 수정
+2. 계약 변경 시 `SCHEMA.md`와 `IMPLEMENTATION_GUIDE.md` 동시 업데이트
+3. 소스 변경 시 `API_COLLECTION_PLAN.md` 먼저 갱신
