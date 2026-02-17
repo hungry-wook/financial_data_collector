@@ -1,0 +1,2 @@
+"""Financial data collector package."""
+

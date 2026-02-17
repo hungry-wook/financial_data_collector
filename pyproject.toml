@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "financial-data-collector"
+version = "0.1.0"
+description = "Phase 1 data collector and bulk export service"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "requests>=2.28",
+]
+
+[project.optional-dependencies]
+parquet = [
+  "pyarrow>=14.0.0",
+]
+dev = [
+  "pytest>=7.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = [
+  "src"
+]
+testpaths = [
+  "tests"
+]
+markers = [
+  "integration: real external integration tests"
+]

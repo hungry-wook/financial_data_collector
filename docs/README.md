@@ -3,7 +3,13 @@
 ## 문서 목록
 - 설계: `ARCHITECTURE.md`
 - 소스 수집 계획: `API_COLLECTION_PLAN.md`
+- KRX 수집 API 명세: `KRX_API_COLLECTION_SPEC.md`
+- KRX 실연동 테스트 가이드: `KRX_INTEGRATION_TEST_GUIDE.md`
 - 구현 지시: `IMPLEMENTATION_GUIDE.md`
+- TDD 구현 체크리스트: `TDD_TODO_CHECKLIST.md`
+- Phase 1 + 조회 인터페이스 설계: `PHASE1_INTERFACE_DESIGN.md`
+- 백테스트 데이터 조회 계약: `BACKTEST_DATA_INTERFACE.md`
+- 벌크 추출 API 규격: `BULK_EXPORT_API_SPEC.md`
 - 스키마 계약: `SCHEMA.md`
 - 범위 점검: `SCOPE_REVIEW.md`
 - 실행 DDL: `../sql/platform_schema.sql`
