@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 
 from .repository import Repository
@@ -20,7 +20,7 @@ class TradingCalendarBuilder:
         open_days = {str(d) for d in index_trade_dates}
         current = date_from
         rows: List[Dict] = []
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
         while current <= date_to:
             day = str(current)
@@ -39,4 +39,3 @@ class TradingCalendarBuilder:
 
         self.repo.upsert_trading_calendar(rows)
         return len(rows)
-

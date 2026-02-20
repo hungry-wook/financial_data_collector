@@ -1,3 +1,17 @@
+Metadata-Version: 2.4
+Name: financial-data-collector
+Version: 0.1.0
+Summary: Phase 1 data collector and bulk export service
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: pykrx-openapi>=0.1.0
+Provides-Extra: parquet
+Requires-Dist: pyarrow>=14.0.0; extra == "parquet"
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: freezegun>=1.5.1; extra == "dev"
+Requires-Dist: psycopg[binary]>=3.1; extra == "dev"
+
 # financial_data_collector
 
 금융 시계열 데이터 수집/정규화/검증 문서 저장소입니다.
@@ -52,16 +66,6 @@
 - `TEST_POSTGRES_DSN=<연결문자열>`
 3. 실행:
 - `uv run pytest -q -m postgres tests/test_schema_contract_postgres.py`
-
-임시 컨테이너로 한 번에 실행(Windows PowerShell):
-- `.\scripts\run_postgres_tests.ps1`
-
-pytest만으로 임시 컨테이너 자동 실행:
-1. `.env` 설정
-- `TEST_POSTGRES_USE_TEMP_CONTAINER=1`
-- `TEST_POSTGRES_DOCKER_PORT=5431`
-2. 실행
-- `uv run pytest -q -m postgres -rs`
 
 ## 1Y KOSDAQ 내보내기 성능 테스트(옵션)
 1. 실행 플래그 설정:

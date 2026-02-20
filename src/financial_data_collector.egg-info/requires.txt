@@ -1,0 +1,9 @@
+pykrx-openapi>=0.1.0
+
+[dev]
+pytest>=7.0
+freezegun>=1.5.1
+psycopg[binary]>=3.1
+
+[parquet]
+pyarrow>=14.0.0

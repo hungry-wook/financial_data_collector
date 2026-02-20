@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List
 
 from .repository import Repository
@@ -10,7 +10,7 @@ class ValidationJob:
 
     def validate_range(self, market_code: str, date_from: str, date_to: str, run_id: str) -> Dict[str, int]:
         issues: List[Dict] = []
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
         rows = self.repo.query(
             """
@@ -117,4 +117,3 @@ class ValidationJob:
             "run_id": run_id,
             "resolved_at": None,
         }
-

@@ -20,6 +20,16 @@ class FakeParquetWriter:
         path.write_text(json.dumps(manifest), encoding="utf-8")
 
 
+class CapturingParquetWriter(FakeParquetWriter):
+    def __init__(self):
+        self.schemas = {}
+
+    def write(self, path: Path, rows):
+        keys = list(rows[0].keys()) if rows else []
+        self.schemas[path.name] = keys
+        return super().write(path, rows)
+
+
 def _seed_data(repo):
     InstrumentCollector(repo).collect(
         [
@@ -134,3 +144,91 @@ def test_api_contract(repo, tmp_path):
     bad_status, _ = api.post_exports({"market_code": "KOSDAQ"})
     assert bad_status == 400
 
+
+def test_parquet_schema_snapshot_instrument_daily(repo, tmp_path):
+    _seed_data(repo)
+    writer = CapturingParquetWriter()
+    svc = ExportService(repo, writer=writer)
+    job = svc.create_job(
+        ExportRequest(
+            market_code="KOSDAQ",
+            index_codes=["KOSDAQ"],
+            date_from="2026-01-01",
+            date_to="2026-01-03",
+            include_issues=False,
+            output_format="parquet",
+            output_path=(tmp_path / "out1").as_posix(),
+        )
+    )
+    svc.run_job(job["job_id"])
+    assert writer.schemas["instrument_daily.parquet"] == [
+        "instrument_id",
+        "external_code",
+        "market_code",
+        "instrument_name",
+        "listing_date",
+        "delisting_date",
+        "trade_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "turnover_value",
+        "market_value",
+        "is_trade_halted",
+        "is_under_supervision",
+        "record_status",
+        "source_name",
+        "collected_at",
+    ]
+
+
+def test_parquet_schema_snapshot_benchmark_daily(repo, tmp_path):
+    _seed_data(repo)
+    writer = CapturingParquetWriter()
+    svc = ExportService(repo, writer=writer)
+    job = svc.create_job(
+        ExportRequest(
+            market_code="KOSDAQ",
+            index_codes=["KOSDAQ"],
+            date_from="2026-01-01",
+            date_to="2026-01-03",
+            include_issues=False,
+            output_format="parquet",
+            output_path=(tmp_path / "out2").as_posix(),
+        )
+    )
+    svc.run_job(job["job_id"])
+    assert writer.schemas["benchmark_daily.parquet"] == [
+        "index_code",
+        "trade_date",
+        "open",
+        "high",
+        "low",
+        "close",
+    ]
+
+
+def test_parquet_schema_snapshot_trading_calendar(repo, tmp_path):
+    _seed_data(repo)
+    writer = CapturingParquetWriter()
+    svc = ExportService(repo, writer=writer)
+    job = svc.create_job(
+        ExportRequest(
+            market_code="KOSDAQ",
+            index_codes=["KOSDAQ"],
+            date_from="2026-01-01",
+            date_to="2026-01-03",
+            include_issues=False,
+            output_format="parquet",
+            output_path=(tmp_path / "out3").as_posix(),
+        )
+    )
+    svc.run_job(job["job_id"])
+    assert writer.schemas["trading_calendar.parquet"] == [
+        "market_code",
+        "trade_date",
+        "is_open",
+        "holiday_name",
+    ]

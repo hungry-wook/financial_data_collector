@@ -1,12 +1,16 @@
 import shutil
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 from uuid import uuid4
 
 from .parquet_writer import ParquetWriter
 from .repository import Repository
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 @dataclass
@@ -33,7 +37,7 @@ class ExportService:
             "job_id": job_id,
             "status": "PENDING",
             "progress": 0,
-            "submitted_at": datetime.utcnow().isoformat() + "Z",
+            "submitted_at": _utc_now_iso(),
             "request": req,
         }
         return {"job_id": job_id, "status": "PENDING", "submitted_at": self.jobs[job_id]["submitted_at"]}
@@ -42,7 +46,7 @@ class ExportService:
         job = self._get_job(job_id)
         req: ExportRequest = job["request"]
         job["status"] = "RUNNING"
-        job["started_at"] = datetime.utcnow().isoformat() + "Z"
+        job["started_at"] = _utc_now_iso()
 
         final_path = Path(req.output_path)
         temp_path = final_path.parent / f".tmp_{job_id}"
@@ -76,7 +80,7 @@ class ExportService:
                 "date_from": req.date_from,
                 "date_to": req.date_to,
                 "schema_version": "phase1-v1",
-                "generated_at": datetime.utcnow().isoformat() + "Z",
+                "generated_at": _utc_now_iso(),
                 "files": [],
             }
             for f in files:
@@ -98,7 +102,7 @@ class ExportService:
                 {
                     "status": "SUCCEEDED",
                     "progress": 100,
-                    "finished_at": datetime.utcnow().isoformat() + "Z",
+                    "finished_at": _utc_now_iso(),
                     "output_path": final_path.as_posix(),
                     "files": files,
                     "row_counts": row_counts,
@@ -111,7 +115,7 @@ class ExportService:
                     "status": "FAILED",
                     "error_code": "EXPORT_FAILED",
                     "error_message": str(exc),
-                    "finished_at": datetime.utcnow().isoformat() + "Z",
+                    "finished_at": _utc_now_iso(),
                 }
             )
             if temp_path.exists():
@@ -145,4 +149,3 @@ class ExportService:
             raise ValueError("market_code is required")
         if not req.index_codes:
             raise ValueError("index_codes is required")
-
