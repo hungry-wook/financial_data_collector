@@ -14,7 +14,7 @@ class ValidationJob:
 
         rows = self.repo.query(
             """
-            SELECT d.instrument_id, d.trade_date, d.open, d.high, d.low, d.close, d.volume, d.turnover_value, d.market_value
+            SELECT d.instrument_id, d.trade_date, d.open, d.high, d.low, d.close, d.volume, d.turnover_value, d.market_value, d.is_trade_halted
             FROM daily_market_data d
             JOIN instruments i ON i.instrument_id = d.instrument_id
             WHERE i.market_code = ?
@@ -23,32 +23,33 @@ class ValidationJob:
             (market_code, date_from, date_to),
         )
         for r in rows:
-            if r["high"] < max(r["open"], r["close"], r["low"]):
-                issues.append(
-                    self._issue(
-                        "daily_market_data",
-                        r["trade_date"],
-                        r["instrument_id"],
-                        None,
-                        "OHLC_HIGH_INCONSISTENT",
-                        "ERROR",
-                        run_id,
-                        now,
+            if not bool(r.get("is_trade_halted")):
+                if r["high"] < max(r["open"], r["close"], r["low"]):
+                    issues.append(
+                        self._issue(
+                            "daily_market_data",
+                            r["trade_date"],
+                            r["instrument_id"],
+                            None,
+                            "OHLC_HIGH_INCONSISTENT",
+                            "ERROR",
+                            run_id,
+                            now,
+                        )
                     )
-                )
-            if r["low"] > min(r["open"], r["close"], r["high"]):
-                issues.append(
-                    self._issue(
-                        "daily_market_data",
-                        r["trade_date"],
-                        r["instrument_id"],
-                        None,
-                        "OHLC_LOW_INCONSISTENT",
-                        "ERROR",
-                        run_id,
-                        now,
+                if r["low"] > min(r["open"], r["close"], r["high"]):
+                    issues.append(
+                        self._issue(
+                            "daily_market_data",
+                            r["trade_date"],
+                            r["instrument_id"],
+                            None,
+                            "OHLC_LOW_INCONSISTENT",
+                            "ERROR",
+                            run_id,
+                            now,
+                        )
                     )
-                )
             if r["volume"] < 0:
                 issues.append(
                     self._issue("daily_market_data", r["trade_date"], r["instrument_id"], None, "NEGATIVE_VOLUME", "ERROR", run_id, now)

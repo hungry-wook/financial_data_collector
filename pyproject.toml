@@ -9,8 +9,14 @@ description = "Phase 1 data collector and bulk export service"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
+  "fastapi>=0.128.8",
   "pykrx-openapi>=0.1.0",
+  "requests>=2.32.5",
+  "uvicorn[standard]>=0.39.0",
 ]
+
+[project.scripts]
+collect-krx-data = "financial_data_collector.collect_krx_data:main"
 
 [project.optional-dependencies]
 parquet = [

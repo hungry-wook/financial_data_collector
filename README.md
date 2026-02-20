@@ -16,7 +16,6 @@
 - `docs/API_COLLECTION_PLAN.md`: 데이터 소스-스키마 매핑 계획
 - `docs/KRX_API_COLLECTION_SPEC.md`: KRX 수집 API 명세
 - `docs/IMPLEMENTATION_GUIDE.md`: Phase별 구현 지시서
-- `docs/TDD_TODO_CHECKLIST.md`: TDD 기반 구현 TODO
 - `docs/PHASE1_INTERFACE_DESIGN.md`: Phase 1 + 조회 인터페이스 설계안
 - `docs/BULK_EXPORT_API_SPEC.md`: 기간 벌크 추출 API 규격
 - `docs/SCHEMA.md`: 스키마 계약 문서
@@ -79,3 +78,11 @@ pytest만으로 임시 컨테이너 자동 실행:
 현재 세션(샌드박스)에서는 Python 실행 파일 접근 제한으로 `uv lock` 생성이 실패할 수 있습니다.
 로컬 일반 터미널에서는 아래 명령으로 lock 파일을 생성할 수 있습니다.
 - `uv lock`
+
+## KRX 데이터 수집 스크립트
+- 실행(기본: KOSDAQ + KOSPI 동시 수집): `uv run collect-krx-data --date-from 2026-01-02 --date-to 2026-01-10`
+- 모듈 실행(기본: KOSDAQ + KOSPI 동시 수집): `uv run python -m financial_data_collector.collect_krx_data --date-from 2026-01-02 --date-to 2026-01-10`
+- 옵션:
+- `--db-path data/financial_data.db`
+- 단일 시장만 수집: `--market-code KOSDAQ` (필요 시 `--index-code KOSDAQ`)
+- 다중 시장 지정: `--market-codes KOSDAQ,KOSPI`

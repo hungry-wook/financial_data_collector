@@ -6,7 +6,6 @@
 - KRX 수집 API 명세: `KRX_API_COLLECTION_SPEC.md`
 - KRX 실연동 테스트 가이드: `KRX_INTEGRATION_TEST_GUIDE.md`
 - 구현 지시: `IMPLEMENTATION_GUIDE.md`
-- TDD 구현 체크리스트: `TDD_TODO_CHECKLIST.md`
 - Phase 1 + 조회 인터페이스 설계: `PHASE1_INTERFACE_DESIGN.md`
 - 백테스트 데이터 조회 계약: `BACKTEST_DATA_INTERFACE.md`
 - 벌크 추출 API 규격: `BULK_EXPORT_API_SPEC.md`

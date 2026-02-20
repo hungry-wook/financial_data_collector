@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KRX 데이터 수집 현황</title>
+<script src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f0f4f8; color: #1a202c; min-height: 100vh; }
+  header { background: #1e3a5f; color: #fff; padding: 1rem 1.5rem; display: flex; align-items: center; gap: .75rem; }
+  header h1 { font-size: 1.2rem; font-weight: 600; }
+  header span { font-size: .8rem; opacity: .7; }
+  nav { background: #fff; border-bottom: 1px solid #e2e8f0; padding: 0 1.5rem; display: flex; gap: .25rem; }
+  nav button { padding: .65rem 1rem; font-size: .875rem; border: none; background: none; cursor: pointer;
+    color: #4a5568; border-bottom: 2px solid transparent; transition: all .15s; }
+  nav button:hover { color: #1e3a5f; }
+  nav button.active { color: #1e3a5f; border-bottom-color: #1e3a5f; font-weight: 600; }
+  main { padding: 1.5rem; max-width: 1400px; margin: 0 auto; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+  .card { background: #fff; border-radius: 8px; padding: 1rem 1.25rem; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .card .label { font-size: .75rem; color: #718096; text-transform: uppercase; letter-spacing: .05em; margin-bottom: .35rem; }
+  .card .value { font-size: 1.5rem; font-weight: 700; color: #1e3a5f; }
+  .card .sub { font-size: .72rem; color: #a0aec0; margin-top: .2rem; }
+  .section { background: #fff; border-radius: 8px; padding: 1.25rem; box-shadow: 0 1px 3px rgba(0,0,0,.08); margin-bottom: 1.5rem; }
+  .section h2 { font-size: .95rem; font-weight: 600; margin-bottom: 1rem; color: #2d3748; }
+  table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+  th { text-align: left; padding: .5rem .75rem; background: #f7fafc; color: #718096; font-weight: 600;
+    font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid #e2e8f0; }
+  td { padding: .55rem .75rem; border-bottom: 1px solid #f0f4f8; color: #2d3748; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #f7fafc; }
+  .badge { display: inline-block; padding: .15rem .5rem; border-radius: 999px; font-size: .72rem; font-weight: 600; }
+  .badge-success { background: #c6f6d5; color: #276749; }
+  .badge-partial { background: #fefcbf; color: #7b6914; }
+  .badge-failed  { background: #fed7d7; color: #9b2c2c; }
+  .badge-running { background: #bee3f8; color: #2b6cb0; }
+  .badge-error   { background: #fed7d7; color: #9b2c2c; }
+  .badge-warn    { background: #fefcbf; color: #7b6914; }
+  .badge-info    { background: #ebf8ff; color: #2b6cb0; }
+  .controls { display: flex; gap: .75rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .controls input, .controls select { padding: .45rem .75rem; border: 1px solid #e2e8f0; border-radius: 6px;
+    font-size: .85rem; color: #2d3748; outline: none; }
+  .controls input:focus, .controls select:focus { border-color: #4a90e2; }
+  .controls button { padding: .45rem 1rem; background: #1e3a5f; color: #fff; border: none; border-radius: 6px;
+    font-size: .85rem; cursor: pointer; }
+  .controls button:hover { background: #2a4f7c; }
+  .pagination { display: flex; gap: .5rem; align-items: center; margin-top: 1rem; font-size: .82rem; color: #718096; }
+  .pagination button { padding: .3rem .65rem; border: 1px solid #e2e8f0; border-radius: 4px; background: #fff;
+    cursor: pointer; font-size: .82rem; }
+  .pagination button:disabled { opacity: .4; cursor: default; }
+  .chart-wrap { position: relative; height: 280px; margin-top: 1rem; }
+  .empty { text-align: center; padding: 2.5rem; color: #a0aec0; font-size: .9rem; }
+  .loading { text-align: center; padding: 1.5rem; color: #718096; }
+  [x-cloak] { display: none !important; }
+</style>
+</head>
+<body x-data="dashboard()" x-init="init()" x-cloak>
+
+<header>
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+  </svg>
+  <h1>KRX 데이터 수집 현황</h1>
+  <span x-text="'갱신: ' + lastRefresh"></span>
+</header>
+
+<nav>
+  <template x-for="tab in tabs" :key="tab.id">
+    <button :class="{'active': activeTab === tab.id}" @click="switchTab(tab.id)" x-text="tab.label"></button>
+  </template>
+</nav>
+
+<main>
+
+  <!-- ============ OVERVIEW ============ -->
+  <div x-show="activeTab === 'overview'">
+    <div class="cards">
+      <div class="card">
+        <div class="label">종목 수</div>
+        <div class="value" x-text="fmt(summary.instrument_count ?? '-')"></div>
+      </div>
+      <div class="card">
+        <div class="label">일별 시세 건수</div>
+        <div class="value" x-text="fmt(summary.price_count ?? '-')"></div>
+        <div class="sub" x-text="summary.price_date_from ? summary.price_date_from + ' ~ ' + summary.price_date_to : ''"></div>
+      </div>
+      <div class="card">
+        <div class="label">벤치마크 건수</div>
+        <div class="value" x-text="fmt(summary.benchmark_count ?? '-')"></div>
+        <div class="sub" x-text="summary.benchmark_date_from ? summary.benchmark_date_from + ' ~ ' + summary.benchmark_date_to : ''"></div>
+      </div>
+      <div class="card">
+        <div class="label">거래일 수</div>
+        <div class="value" x-text="fmt(summary.trading_days ?? '-')"></div>
+      </div>
+      <div class="card">
+        <div class="label">미해결 품질이슈</div>
+        <div class="value" :style="summary.open_issues > 0 ? 'color:#c53030' : ''" x-text="fmt(summary.open_issues ?? '-')"></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>최근 수집 이력</h2>
+      <div x-show="runsLoading" class="loading">로딩 중...</div>
+      <div x-show="!runsLoading && runs.length === 0" class="empty">수집 이력이 없습니다</div>
+      <table x-show="!runsLoading && runs.length > 0">
+        <thead>
+          <tr>
+            <th>파이프라인</th><th>소스</th><th>기간</th><th>상태</th>
+            <th>시작시각</th><th>소요(초)</th><th>성공</th><th>실패</th><th>경고</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="r in runs" :key="r.run_id">
+            <tr>
+              <td x-text="r.pipeline_name"></td>
+              <td x-text="r.source_name"></td>
+              <td x-text="r.window_start + ' ~ ' + r.window_end"></td>
+              <td><span :class="statusBadge(r.status)" x-text="r.status"></span></td>
+              <td x-text="r.started_at ? r.started_at.slice(0,19) : ''"></td>
+              <td x-text="elapsed(r.started_at, r.finished_at)"></td>
+              <td x-text="r.success_count"></td>
+              <td x-text="r.failure_count"></td>
+              <td x-text="r.warning_count"></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ============ INSTRUMENTS ============ -->
+  <div x-show="activeTab === 'instruments'">
+    <div class="section">
+      <h2>종목 목록</h2>
+      <div class="controls">
+        <input x-model="instrSearch" @keyup.enter="loadInstruments(1)" placeholder="종목코드 또는 종목명 검색..." style="width:260px">
+        <button @click="loadInstruments(1)">검색</button>
+      </div>
+      <div x-show="instrLoading" class="loading">로딩 중...</div>
+      <div x-show="!instrLoading && instruments.items?.length === 0" class="empty">검색 결과가 없습니다</div>
+      <table x-show="!instrLoading && instruments.items?.length > 0">
+        <thead>
+          <tr><th>코드</th><th>종목명</th><th>시장</th><th>그룹</th><th>섹터</th><th>상장일</th><th>상폐일</th></tr>
+        </thead>
+        <tbody>
+          <template x-for="i in instruments.items" :key="i.instrument_id">
+            <tr>
+              <td x-text="i.external_code"></td>
+              <td x-text="i.instrument_name"></td>
+              <td x-text="i.market_code"></td>
+              <td x-text="i.security_group ?? '-'"></td>
+              <td x-text="i.sector_name ?? '-'"></td>
+              <td x-text="i.listing_date"></td>
+              <td x-text="i.delisting_date ?? '-'"></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+      <div class="pagination" x-show="instruments.total > 0">
+        <button @click="loadInstruments(instrPage - 1)" :disabled="instrPage <= 1">◀</button>
+        <span x-text="'페이지 ' + instrPage + ' / ' + Math.ceil(instruments.total / instrSize)"></span>
+        <button @click="loadInstruments(instrPage + 1)" :disabled="instrPage >= Math.ceil(instruments.total / instrSize)">▶</button>
+        <span x-text="'총 ' + fmt(instruments.total) + '개'"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ PRICES ============ -->
+  <div x-show="activeTab === 'prices'">
+    <div class="section">
+      <h2>일별 시세</h2>
+      <div class="controls">
+        <input x-model="priceInstrId" placeholder="종목 ID (예: KRX_KOSPI_005930)" style="width:280px">
+        <input type="date" x-model="priceFrom">
+        <input type="date" x-model="priceTo">
+        <button @click="loadPrices()">조회</button>
+      </div>
+      <div x-show="priceLoading" class="loading">로딩 중...</div>
+      <div x-show="!priceLoading && prices.length === 0 && priceQueried" class="empty">데이터가 없습니다</div>
+      <div x-show="prices.length > 0">
+        <div class="chart-wrap">
+          <canvas id="priceChart"></canvas>
+        </div>
+        <table style="margin-top:1rem">
+          <thead>
+            <tr><th>날짜</th><th>시가</th><th>고가</th><th>저가</th><th>종가</th><th>거래량</th><th>등락률(%)</th><th>상태</th></tr>
+          </thead>
+          <tbody>
+            <template x-for="p in prices" :key="p.trade_date">
+              <tr>
+                <td x-text="p.trade_date"></td>
+                <td x-text="fmt(p.open)"></td>
+                <td x-text="fmt(p.high)"></td>
+                <td x-text="fmt(p.low)"></td>
+                <td x-text="fmt(p.close)"></td>
+                <td x-text="fmt(p.volume)"></td>
+                <td x-text="p.change_rate != null ? p.change_rate.toFixed(2) : '-'"></td>
+                <td x-text="p.record_status"></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ BENCHMARKS ============ -->
+  <div x-show="activeTab === 'benchmarks'">
+    <div class="section">
+      <h2>벤치마크 지수</h2>
+      <div class="controls">
+        <select x-model="selectedIndex" @change="loadBenchmarkSeries()">
+          <option value="">지수 선택...</option>
+          <template x-for="b in benchmarks" :key="b.index_code">
+            <option :value="b.index_code" x-text="b.index_code + (b.index_name ? ' (' + b.index_name + ')' : '') + ' — ' + fmt(b.record_count) + '건'"></option>
+          </template>
+        </select>
+        <input type="date" x-model="benchFrom">
+        <input type="date" x-model="benchTo">
+        <button @click="loadBenchmarkSeries()" :disabled="!selectedIndex">조회</button>
+      </div>
+      <div x-show="benchLoading" class="loading">로딩 중...</div>
+      <div x-show="!benchLoading && benchSeries.length === 0 && selectedIndex" class="empty">데이터가 없습니다</div>
+      <div x-show="benchSeries.length > 0">
+        <div class="chart-wrap">
+          <canvas id="benchChart"></canvas>
+        </div>
+        <table style="margin-top:1rem">
+          <thead>
+            <tr><th>날짜</th><th>시가</th><th>고가</th><th>저가</th><th>종가</th><th>등락률(%)</th></tr>
+          </thead>
+          <tbody>
+            <template x-for="b in benchSeries" :key="b.trade_date">
+              <tr>
+                <td x-text="b.trade_date"></td>
+                <td x-text="b.open?.toFixed(2)"></td>
+                <td x-text="b.high?.toFixed(2)"></td>
+                <td x-text="b.low?.toFixed(2)"></td>
+                <td x-text="b.close?.toFixed(2)"></td>
+                <td x-text="b.change_rate != null ? b.change_rate.toFixed(2) : '-'"></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ QUALITY ============ -->
+  <div x-show="activeTab === 'quality'">
+    <div class="section">
+      <h2>데이터 품질 이슈 (미해결)</h2>
+      <div class="controls">
+        <select x-model="qualitySeverity" @change="loadQualityIssues()">
+          <option value="">전체 심각도</option>
+          <option value="ERROR">ERROR</option>
+          <option value="WARN">WARN</option>
+          <option value="INFO">INFO</option>
+        </select>
+      </div>
+      <div x-show="qualityLoading" class="loading">로딩 중...</div>
+      <div x-show="!qualityLoading && qualityIssues.length === 0" class="empty">미해결 이슈가 없습니다</div>
+      <table x-show="!qualityLoading && qualityIssues.length > 0">
+        <thead>
+          <tr><th>심각도</th><th>데이터셋</th><th>날짜</th><th>종목/지수</th><th>이슈코드</th><th>상세</th><th>감지시각</th></tr>
+        </thead>
+        <tbody>
+          <template x-for="q in qualityIssues" :key="q.issue_id">
+            <tr>
+              <td><span :class="severityBadge(q.severity)" x-text="q.severity"></span></td>
+              <td x-text="q.dataset_name"></td>
+              <td x-text="q.trade_date ?? '-'"></td>
+              <td x-text="q.instrument_id ?? q.index_code ?? '-'"></td>
+              <td x-text="q.issue_code"></td>
+              <td x-text="q.issue_detail ?? '-'" style="max-width:300px;word-break:break-word"></td>
+              <td x-text="q.detected_at ? q.detected_at.slice(0,19) : ''"></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</main>
+
+<script>
+function dashboard() {
+  return {
+    tabs: [
+      { id: 'overview',     label: 'Overview' },
+      { id: 'instruments',  label: 'Instruments' },
+      { id: 'prices',       label: 'Prices' },
+      { id: 'benchmarks',   label: 'Benchmarks' },
+      { id: 'quality',      label: 'Quality' },
+    ],
+    activeTab: 'overview',
+    lastRefresh: '-',
+
+    // Overview
+    summary: {},
+    runs: [],
+    runsLoading: false,
+
+    // Instruments
+    instruments: { total: 0, items: [] },
+    instrSearch: '',
+    instrPage: 1,
+    instrSize: 50,
+    instrLoading: false,
+
+    // Prices
+    prices: [],
+    priceInstrId: '',
+    priceFrom: '',
+    priceTo: '',
+    priceLoading: false,
+    priceQueried: false,
+    _priceChart: null,
+
+    // Benchmarks
+    benchmarks: [],
+    benchSeries: [],
+    selectedIndex: '',
+    benchFrom: '',
+    benchTo: '',
+    benchLoading: false,
+    _benchChart: null,
+
+    // Quality
+    qualityIssues: [],
+    qualitySeverity: '',
+    qualityLoading: false,
+
+    async init() {
+      await Promise.all([this.loadSummary(), this.loadRuns(), this.loadBenchmarks()]);
+      this.lastRefresh = new Date().toLocaleTimeString('ko-KR');
+    },
+
+    switchTab(id) {
+      this.activeTab = id;
+      if (id === 'instruments' && this.instruments.items.length === 0) this.loadInstruments(1);
+      if (id === 'quality' && this.qualityIssues.length === 0) this.loadQualityIssues();
+    },
+
+    async loadSummary() {
+      const data = await fetch('/api/v1/dashboard/summary').then(r => r.json()).catch(() => ({}));
+      this.summary = data;
+    },
+
+    async loadRuns() {
+      this.runsLoading = true;
+      this.runs = await fetch('/api/v1/dashboard/runs?limit=20').then(r => r.json()).catch(() => []);
+      this.runsLoading = false;
+    },
+
+    async loadInstruments(page) {
+      this.instrPage = page;
+      this.instrLoading = true;
+      const q = new URLSearchParams({ search: this.instrSearch, page, size: this.instrSize });
+      this.instruments = await fetch('/api/v1/dashboard/instruments?' + q).then(r => r.json()).catch(() => ({ total: 0, items: [] }));
+      this.instrLoading = false;
+    },
+
+    async loadPrices() {
+      if (!this.priceInstrId.trim()) return;
+      this.priceLoading = true;
+      this.priceQueried = true;
+      const q = new URLSearchParams({ instrument_id: this.priceInstrId.trim() });
+      if (this.priceFrom) q.set('date_from', this.priceFrom);
+      if (this.priceTo)   q.set('date_to',   this.priceTo);
+      const data = await fetch('/api/v1/dashboard/prices?' + q).then(r => r.json()).catch(() => ({ items: [] }));
+      this.prices = (data.items || []).slice().reverse();
+      this.priceLoading = false;
+      await this.$nextTick();
+      this.renderPriceChart();
+    },
+
+    renderPriceChart() {
+      const ctx = document.getElementById('priceChart');
+      if (!ctx) return;
+      if (this._priceChart) this._priceChart.destroy();
+      this._priceChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: this.prices.map(p => p.trade_date),
+          datasets: [{
+            label: '종가',
+            data: this.prices.map(p => p.close),
+            borderColor: '#1e3a5f',
+            backgroundColor: 'rgba(30,58,95,.08)',
+            borderWidth: 1.5,
+            pointRadius: this.prices.length > 100 ? 0 : 2,
+            fill: true,
+            tension: 0.1,
+          }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+      });
+    },
+
+    async loadBenchmarks() {
+      this.benchmarks = await fetch('/api/v1/dashboard/benchmarks').then(r => r.json()).catch(() => []);
+    },
+
+    async loadBenchmarkSeries() {
+      if (!this.selectedIndex) return;
+      this.benchLoading = true;
+      const q = new URLSearchParams();
+      if (this.benchFrom) q.set('date_from', this.benchFrom);
+      if (this.benchTo)   q.set('date_to',   this.benchTo);
+      const data = await fetch(`/api/v1/dashboard/benchmarks/${encodeURIComponent(this.selectedIndex)}?` + q)
+        .then(r => r.json()).catch(() => ({ items: [] }));
+      this.benchSeries = (data.items || []).slice().reverse();
+      this.benchLoading = false;
+      await this.$nextTick();
+      this.renderBenchChart();
+    },
+
+    renderBenchChart() {
+      const ctx = document.getElementById('benchChart');
+      if (!ctx) return;
+      if (this._benchChart) this._benchChart.destroy();
+      this._benchChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: this.benchSeries.map(b => b.trade_date),
+          datasets: [{
+            label: this.selectedIndex,
+            data: this.benchSeries.map(b => b.close),
+            borderColor: '#2c6fad',
+            backgroundColor: 'rgba(44,111,173,.08)',
+            borderWidth: 1.5,
+            pointRadius: this.benchSeries.length > 100 ? 0 : 2,
+            fill: true,
+            tension: 0.1,
+          }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: true } } }
+      });
+    },
+
+    async loadQualityIssues() {
+      this.qualityLoading = true;
+      const q = new URLSearchParams({ limit: 50 });
+      if (this.qualitySeverity) q.set('severity', this.qualitySeverity);
+      this.qualityIssues = await fetch('/api/v1/dashboard/quality-issues?' + q).then(r => r.json()).catch(() => []);
+      this.qualityLoading = false;
+    },
+
+    // Helpers
+    fmt(n) {
+      if (n == null || n === '-') return '-';
+      if (typeof n === 'number') return n.toLocaleString('ko-KR');
+      const num = Number(n);
+      return isNaN(num) ? n : num.toLocaleString('ko-KR');
+    },
+
+    elapsed(start, end) {
+      if (!start || !end) return '-';
+      const diff = (new Date(end) - new Date(start)) / 1000;
+      return diff.toFixed(1);
+    },
+
+    statusBadge(status) {
+      const map = { SUCCESS: 'badge badge-success', PARTIAL: 'badge badge-partial',
+                    FAILED: 'badge badge-failed', RUNNING: 'badge badge-running' };
+      return map[status] || 'badge';
+    },
+
+    severityBadge(sev) {
+      const map = { ERROR: 'badge badge-error', WARN: 'badge badge-warn', INFO: 'badge badge-info' };
+      return map[sev] || 'badge';
+    },
+  };
+}
+</script>
+</body>
+</html>

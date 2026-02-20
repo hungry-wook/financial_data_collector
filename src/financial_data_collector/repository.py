@@ -1,5 +1,6 @@
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
@@ -30,8 +31,15 @@ class Repository:
                     external_code TEXT NOT NULL,
                     market_code TEXT NOT NULL,
                     instrument_name TEXT NOT NULL,
+                    instrument_name_abbr TEXT NULL,
+                    instrument_name_eng TEXT NULL,
                     listing_date TEXT NOT NULL,
                     delisting_date TEXT NULL,
+                    listed_shares INTEGER NULL,
+                    security_group TEXT NULL,
+                    sector_name TEXT NULL,
+                    stock_type TEXT NULL,
+                    par_value REAL NULL,
                     source_name TEXT NOT NULL,
                     collected_at TEXT NOT NULL,
                     updated_at TEXT NULL,
@@ -78,6 +86,9 @@ class Repository:
                     volume INTEGER NOT NULL,
                     turnover_value REAL NULL,
                     market_value REAL NULL,
+                    price_change REAL NULL,
+                    change_rate REAL NULL,
+                    listed_shares INTEGER NULL,
                     is_trade_halted INTEGER NOT NULL DEFAULT 0,
                     is_under_supervision INTEGER NOT NULL DEFAULT 0,
                     record_status TEXT NOT NULL DEFAULT 'VALID',
@@ -102,12 +113,19 @@ class Repository:
                     high REAL NOT NULL,
                     low REAL NOT NULL,
                     close REAL NOT NULL,
+                    volume INTEGER NULL,
+                    turnover_value REAL NULL,
+                    market_cap REAL NULL,
+                    price_change REAL NULL,
+                    change_rate REAL NULL,
+                    index_name TEXT NULL,
                     source_name TEXT NOT NULL,
                     collected_at TEXT NOT NULL,
                     run_id TEXT NULL,
                     PRIMARY KEY (index_code, trade_date),
                     CHECK (high >= MAX(open, close, low)),
                     CHECK (low <= MIN(open, close, high)),
+                    CHECK (volume IS NULL OR volume >= 0),
                     FOREIGN KEY (run_id) REFERENCES collection_runs(run_id)
                 );
 
@@ -129,7 +147,8 @@ class Repository:
                     FOREIGN KEY (run_id) REFERENCES collection_runs(run_id)
                 );
 
-                CREATE VIEW IF NOT EXISTS core_market_dataset_v1 AS
+                DROP VIEW IF EXISTS core_market_dataset_v1;
+                CREATE VIEW core_market_dataset_v1 AS
                 SELECT d.instrument_id,
                     i.external_code,
                     i.market_code,
@@ -152,7 +171,8 @@ class Repository:
                 FROM daily_market_data d
                 JOIN instruments i ON i.instrument_id = d.instrument_id;
 
-                CREATE VIEW IF NOT EXISTS benchmark_dataset_v1 AS
+                DROP VIEW IF EXISTS benchmark_dataset_v1;
+                CREATE VIEW benchmark_dataset_v1 AS
                 SELECT index_code, trade_date, open, high, low, close, source_name, collected_at
                 FROM benchmark_index_data;
 
@@ -197,15 +217,23 @@ class Repository:
             conn.executemany(
                 """
                 INSERT INTO instruments(
-                    instrument_id, external_code, market_code, instrument_name,
-                    listing_date, delisting_date, source_name, collected_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    instrument_id, external_code, market_code, instrument_name, instrument_name_abbr,
+                    instrument_name_eng, listing_date, delisting_date, listed_shares, security_group,
+                    sector_name, stock_type, par_value, source_name, collected_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(instrument_id) DO UPDATE SET
                     external_code=excluded.external_code,
                     market_code=excluded.market_code,
                     instrument_name=excluded.instrument_name,
+                    instrument_name_abbr=excluded.instrument_name_abbr,
+                    instrument_name_eng=excluded.instrument_name_eng,
                     listing_date=excluded.listing_date,
                     delisting_date=excluded.delisting_date,
+                    listed_shares=excluded.listed_shares,
+                    security_group=excluded.security_group,
+                    sector_name=excluded.sector_name,
+                    stock_type=excluded.stock_type,
+                    par_value=excluded.par_value,
                     source_name=excluded.source_name,
                     collected_at=excluded.collected_at,
                     updated_at=excluded.updated_at
@@ -216,8 +244,15 @@ class Repository:
                         r["external_code"],
                         r["market_code"],
                         r["instrument_name"],
+                        r.get("instrument_name_abbr"),
+                        r.get("instrument_name_eng"),
                         r["listing_date"],
                         r.get("delisting_date"),
+                        r.get("listed_shares"),
+                        r.get("security_group"),
+                        r.get("sector_name"),
+                        r.get("stock_type"),
+                        r.get("par_value"),
                         r["source_name"],
                         r["collected_at"],
                         r.get("updated_at"),
@@ -232,9 +267,9 @@ class Repository:
                 """
                 INSERT INTO daily_market_data(
                     instrument_id, trade_date, open, high, low, close, volume, turnover_value,
-                    market_value, is_trade_halted, is_under_supervision, record_status, source_name,
-                    collected_at, run_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    market_value, price_change, change_rate, listed_shares, is_trade_halted,
+                    is_under_supervision, record_status, source_name, collected_at, run_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(instrument_id, trade_date) DO UPDATE SET
                     open=excluded.open,
                     high=excluded.high,
@@ -243,6 +278,9 @@ class Repository:
                     volume=excluded.volume,
                     turnover_value=excluded.turnover_value,
                     market_value=excluded.market_value,
+                    price_change=excluded.price_change,
+                    change_rate=excluded.change_rate,
+                    listed_shares=excluded.listed_shares,
                     is_trade_halted=excluded.is_trade_halted,
                     is_under_supervision=excluded.is_under_supervision,
                     record_status=excluded.record_status,
@@ -261,6 +299,9 @@ class Repository:
                         r["volume"],
                         r.get("turnover_value"),
                         r.get("market_value"),
+                        r.get("price_change"),
+                        r.get("change_rate"),
+                        r.get("listed_shares"),
                         1 if r.get("is_trade_halted") else 0,
                         1 if r.get("is_under_supervision") else 0,
                         r.get("record_status", "VALID"),
@@ -277,13 +318,20 @@ class Repository:
             conn.executemany(
                 """
                 INSERT INTO benchmark_index_data(
-                    index_code, trade_date, open, high, low, close, source_name, collected_at, run_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    index_code, trade_date, open, high, low, close, volume, turnover_value,
+                    market_cap, price_change, change_rate, index_name, source_name, collected_at, run_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(index_code, trade_date) DO UPDATE SET
                     open=excluded.open,
                     high=excluded.high,
                     low=excluded.low,
                     close=excluded.close,
+                    volume=excluded.volume,
+                    turnover_value=excluded.turnover_value,
+                    market_cap=excluded.market_cap,
+                    price_change=excluded.price_change,
+                    change_rate=excluded.change_rate,
+                    index_name=excluded.index_name,
                     source_name=excluded.source_name,
                     collected_at=excluded.collected_at,
                     run_id=excluded.run_id
@@ -296,6 +344,12 @@ class Repository:
                         r["high"],
                         r["low"],
                         r["close"],
+                        r.get("volume"),
+                        r.get("turnover_value"),
+                        r.get("market_cap"),
+                        r.get("price_change"),
+                        r.get("change_rate"),
+                        r.get("index_name"),
                         r["source_name"],
                         r["collected_at"],
                         r.get("run_id"),
@@ -415,3 +469,19 @@ class Repository:
             """,
             (date_from, date_to),
         )
+
+    def resolve_halted_issues(self, resolved_at: Optional[str] = None) -> int:
+        resolved_time = resolved_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE data_quality_issues
+                SET resolved_at = ?
+                WHERE resolved_at IS NULL
+                  AND dataset_name = 'daily_market_data'
+                  AND issue_code = 'INVALID_DAILY_MARKET_ROW'
+                  AND issue_detail = 'high is inconsistent'
+                """,
+                (resolved_time,),
+            )
+            return int(cur.rowcount or 0)

@@ -83,8 +83,15 @@ class InstrumentCollector:
                     "external_code": r["external_code"],
                     "market_code": r["market_code"].upper(),
                     "instrument_name": r.get("instrument_name", r["external_code"]),
+                    "instrument_name_abbr": r.get("instrument_name_abbr"),
+                    "instrument_name_eng": r.get("instrument_name_eng"),
                     "listing_date": listing_date,
                     "delisting_date": delisting_date,
+                    "listed_shares": r.get("listed_shares"),
+                    "security_group": r.get("security_group"),
+                    "sector_name": r.get("sector_name"),
+                    "stock_type": r.get("stock_type"),
+                    "par_value": r.get("par_value"),
                     "source_name": source_name,
                     "collected_at": now,
                     "updated_at": now,
@@ -139,6 +146,9 @@ class DailyMarketCollector:
                         "volume": volume,
                         "turnover_value": turnover_value,
                         "market_value": market_value,
+                        "price_change": float(r["price_change"]) if r.get("price_change") is not None else None,
+                        "change_rate": float(r["change_rate"]) if r.get("change_rate") is not None else None,
+                        "listed_shares": r.get("listed_shares"),
                         "is_trade_halted": bool(r.get("is_trade_halted", False)),
                         "is_under_supervision": bool(r.get("is_under_supervision", False)),
                         "record_status": r.get("record_status", "VALID"),
@@ -223,6 +233,12 @@ class BenchmarkCollector:
                 )
                 continue
 
+            volume = r.get("volume")
+            turnover_value = r.get("turnover_value")
+            market_cap = r.get("market_cap")
+            price_change = r.get("price_change")
+            change_rate = r.get("change_rate")
+
             normalized.append(
                 {
                     "index_code": index_code,
@@ -231,6 +247,12 @@ class BenchmarkCollector:
                     "high": high_price,
                     "low": low_price,
                     "close": close_price,
+                    "volume": int(volume) if volume is not None else None,
+                    "turnover_value": float(turnover_value) if turnover_value is not None else None,
+                    "market_cap": float(market_cap) if market_cap is not None else None,
+                    "price_change": float(price_change) if price_change is not None else None,
+                    "change_rate": float(change_rate) if change_rate is not None else None,
+                    "index_name": r.get("index_name"),
                     "source_name": source_name,
                     "collected_at": now,
                     "run_id": run_id,

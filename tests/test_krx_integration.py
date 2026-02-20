@@ -62,6 +62,93 @@ def test_real_krx_index_call_smoke():
 
 
 @pytest.mark.integration
+def test_real_krx_collects_instruments_to_database(repo):
+    """Test that instruments are actually collected and stored"""
+    client = _build_client_or_skip()
+    base_day = date(2026, 1, 2)  # Known trading day
+
+    # Fetch and extract
+    payload = _call_or_skip_network(lambda: client.get_instruments("KOSDAQ", base_day))
+    from financial_data_collector.collect_krx_data import _extract_rows, _normalize_instruments
+
+    rows = _extract_rows(payload)
+    assert len(rows) > 0, f"Expected rows from API, got empty. Payload keys: {list(payload.keys()) if isinstance(payload, dict) else 'not a dict'}"
+
+    # Normalize
+    normalized = _normalize_instruments(rows, "KOSDAQ")
+    assert len(normalized) > 0, f"Expected normalized instruments, got 0 from {len(rows)} raw rows"
+
+    # Collect
+    from financial_data_collector.collectors import InstrumentCollector
+    count = InstrumentCollector(repo).collect(normalized, "krx")
+    assert count > 0, "Expected instruments to be collected to database"
+
+    # Verify in database
+    db_rows = repo.query("SELECT COUNT(*) as cnt FROM instruments WHERE market_code = 'KOSDAQ'")
+    assert db_rows[0]["cnt"] > 0
+
+
+@pytest.mark.integration
+def test_real_krx_collects_daily_market_to_database(repo):
+    """Test that daily market data is actually collected and stored"""
+    client = _build_client_or_skip()
+    trade_day = date(2026, 1, 2)  # Known trading day
+
+    # Fetch and extract
+    payload = _call_or_skip_network(lambda: client.get_daily_market("KOSDAQ", trade_day))
+    from financial_data_collector.collect_krx_data import _extract_rows, _normalize_daily_market
+
+    rows = _extract_rows(payload)
+    assert len(rows) > 0, f"Expected rows from API, got empty. Payload keys: {list(payload.keys()) if isinstance(payload, dict) else 'not a dict'}"
+
+    # Normalize
+    normalized = _normalize_daily_market(rows, trade_day)
+    assert len(normalized) > 0, f"Expected normalized daily market data, got 0 from {len(rows)} raw rows"
+
+    # Collect
+    from financial_data_collector.collectors import DailyMarketCollector
+    from financial_data_collector.runs import RunManager
+    run_id = RunManager(repo).start("test", "krx", str(trade_day), str(trade_day))
+
+    count = DailyMarketCollector(repo).collect(normalized, "krx", run_id)
+    assert count > 0, "Expected daily market records to be collected to database"
+
+    # Verify in database
+    db_rows = repo.query("SELECT COUNT(*) as cnt FROM daily_market_data WHERE trade_date = ?", (trade_day.isoformat(),))
+    assert db_rows[0]["cnt"] > 0
+
+
+@pytest.mark.integration
+def test_real_krx_collects_benchmark_to_database(repo):
+    """Test that benchmark data is actually collected and stored"""
+    client = _build_client_or_skip()
+    trade_day = date(2026, 1, 2)  # Known trading day
+
+    # Fetch and extract
+    payload = _call_or_skip_network(lambda: client.get_index_daily("KOSDAQ", trade_day))
+    from financial_data_collector.collect_krx_data import _extract_rows, _normalize_benchmark
+
+    rows = _extract_rows(payload)
+    assert len(rows) > 0, f"Expected rows from API, got empty. Payload keys: {list(payload.keys()) if isinstance(payload, dict) else 'not a dict'}"
+
+    # Normalize
+    normalized = _normalize_benchmark(rows, "KOSDAQ", trade_day)
+    assert len(normalized) > 0, f"Expected normalized benchmark data, got 0 from {len(rows)} raw rows"
+
+    # Collect
+    from financial_data_collector.collectors import BenchmarkCollector
+    from financial_data_collector.runs import RunManager
+    run_id = RunManager(repo).start("test", "krx", str(trade_day), str(trade_day))
+
+    count = BenchmarkCollector(repo).collect(normalized, "krx", run_id)
+    assert count > 0, "Expected benchmark records to be collected to database"
+
+    # Verify in database
+    db_rows = repo.query("SELECT COUNT(*) as cnt FROM benchmark_index_data WHERE index_code = 'KOSDAQ' AND trade_date = ?", (trade_day.isoformat(),))
+    assert db_rows[0]["cnt"] > 0
+
+
+@pytest.mark.integration
 def test_real_krx_smoke_plus_validation_issue_logging(repo):
     client = _build_client_or_skip()
     base_day = date.today()

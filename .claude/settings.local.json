@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv pip list:*)",
+      "Bash(python -c:*)",
+      "Bash(uv run pytest:*)",
+      "Bash(uv run:*)",
+      "Bash(sqlite3:*)",
+      "Bash(while IFS='|' read inst dt)",
+      "Bash(do echo \"=== $inst $dt ===\")",
+      "Bash(done)",
+      "Bash(python -m pytest:*)"
+    ]
+  }
+}
