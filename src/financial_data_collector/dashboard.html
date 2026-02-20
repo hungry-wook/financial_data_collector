@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
@@ -46,6 +46,8 @@
   .controls button { padding: .45rem 1rem; background: #1e3a5f; color: #fff; border: none; border-radius: 6px;
     font-size: .85rem; cursor: pointer; }
   .controls button:hover { background: #2a4f7c; }
+  .sortable-th { cursor: pointer; user-select: none; white-space: nowrap; }
+  .sort-arrow { margin-left: .25rem; color: #4a5568; font-size: .72rem; }
   .pagination { display: flex; gap: .5rem; align-items: center; margin-top: 1rem; font-size: .82rem; color: #718096; }
   .pagination button { padding: .3rem .65rem; border: 1px solid #e2e8f0; border-radius: 4px; background: #fff;
     cursor: pointer; font-size: .82rem; }
@@ -74,7 +76,6 @@
 
 <main>
 
-  <!-- ============ OVERVIEW ============ -->
   <div x-show="activeTab === 'overview'">
     <div class="cards">
       <div class="card">
@@ -96,7 +97,7 @@
         <div class="value" x-text="fmt(summary.trading_days ?? '-')"></div>
       </div>
       <div class="card">
-        <div class="label">미해결 품질이슈</div>
+        <div class="label">미해결 이슈</div>
         <div class="value" :style="summary.open_issues > 0 ? 'color:#c53030' : ''" x-text="fmt(summary.open_issues ?? '-')"></div>
       </div>
     </div>
@@ -131,19 +132,39 @@
     </div>
   </div>
 
-  <!-- ============ INSTRUMENTS ============ -->
   <div x-show="activeTab === 'instruments'">
     <div class="section">
       <h2>종목 목록</h2>
       <div class="controls">
         <input x-model="instrSearch" @keyup.enter="loadInstruments(1)" placeholder="종목코드 또는 종목명 검색..." style="width:260px">
         <button @click="loadInstruments(1)">검색</button>
+        <button @click="resetInstrumentFilters()" style="background:#4a5568">필터 초기화</button>
+      </div>
+      <div class="controls">
+        <input x-model="instrFilters.external_code" @keyup.enter="loadInstruments(1)" placeholder="코드 필터" style="width:140px">
+        <input x-model="instrFilters.instrument_name" @keyup.enter="loadInstruments(1)" placeholder="종목명 필터" style="width:180px">
+        <input x-model="instrFilters.market_code" @keyup.enter="loadInstruments(1)" placeholder="시장 필터" style="width:130px">
+        <input x-model="instrFilters.security_group" @keyup.enter="loadInstruments(1)" placeholder="그룹 필터" style="width:130px">
+        <input x-model="instrFilters.sector_name" @keyup.enter="loadInstruments(1)" placeholder="섹터 필터" style="width:130px">
+        <select x-model="instrFilters.listed_status" @change="loadInstruments(1)">
+          <option value="">상장상태 전체</option>
+          <option value="listed">상장</option>
+          <option value="delisted">상장폐지</option>
+        </select>
       </div>
       <div x-show="instrLoading" class="loading">로딩 중...</div>
       <div x-show="!instrLoading && instruments.items?.length === 0" class="empty">검색 결과가 없습니다</div>
       <table x-show="!instrLoading && instruments.items?.length > 0">
         <thead>
-          <tr><th>코드</th><th>종목명</th><th>시장</th><th>그룹</th><th>섹터</th><th>상장일</th><th>상폐일</th></tr>
+          <tr>
+            <th class="sortable-th" @click="sortInstruments('external_code')">코드 <span class="sort-arrow" x-text="sortMark('external_code')"></span></th>
+            <th class="sortable-th" @click="sortInstruments('instrument_name')">종목명 <span class="sort-arrow" x-text="sortMark('instrument_name')"></span></th>
+            <th class="sortable-th" @click="sortInstruments('market_code')">시장 <span class="sort-arrow" x-text="sortMark('market_code')"></span></th>
+            <th class="sortable-th" @click="sortInstruments('security_group')">그룹 <span class="sort-arrow" x-text="sortMark('security_group')"></span></th>
+            <th class="sortable-th" @click="sortInstruments('sector_name')">섹터 <span class="sort-arrow" x-text="sortMark('sector_name')"></span></th>
+            <th class="sortable-th" @click="sortInstruments('listing_date')">상장일 <span class="sort-arrow" x-text="sortMark('listing_date')"></span></th>
+            <th class="sortable-th" @click="sortInstruments('delisting_date')">상폐일 <span class="sort-arrow" x-text="sortMark('delisting_date')"></span></th>
+          </tr>
         </thead>
         <tbody>
           <template x-for="i in instruments.items" :key="i.instrument_id">
@@ -160,15 +181,14 @@
         </tbody>
       </table>
       <div class="pagination" x-show="instruments.total > 0">
-        <button @click="loadInstruments(instrPage - 1)" :disabled="instrPage <= 1">◀</button>
+        <button @click="loadInstruments(instrPage - 1)" :disabled="instrPage <= 1">이전</button>
         <span x-text="'페이지 ' + instrPage + ' / ' + Math.ceil(instruments.total / instrSize)"></span>
-        <button @click="loadInstruments(instrPage + 1)" :disabled="instrPage >= Math.ceil(instruments.total / instrSize)">▶</button>
+        <button @click="loadInstruments(instrPage + 1)" :disabled="instrPage >= Math.ceil(instruments.total / instrSize)">다음</button>
         <span x-text="'총 ' + fmt(instruments.total) + '개'"></span>
       </div>
     </div>
   </div>
 
-  <!-- ============ PRICES ============ -->
   <div x-show="activeTab === 'prices'">
     <div class="section">
       <h2>일별 시세</h2>
@@ -186,7 +206,7 @@
         </div>
         <table style="margin-top:1rem">
           <thead>
-            <tr><th>날짜</th><th>시가</th><th>고가</th><th>저가</th><th>종가</th><th>거래량</th><th>등락률(%)</th><th>상태</th></tr>
+            <tr><th>일자</th><th>시가</th><th>고가</th><th>저가</th><th>종가</th><th>거래량</th><th>등락률(%)</th><th>상태</th></tr>
           </thead>
           <tbody>
             <template x-for="p in prices" :key="p.trade_date">
@@ -207,30 +227,35 @@
     </div>
   </div>
 
-  <!-- ============ BENCHMARKS ============ -->
   <div x-show="activeTab === 'benchmarks'">
     <div class="section">
       <h2>벤치마크 지수</h2>
       <div class="controls">
-        <select x-model="selectedIndex" @change="loadBenchmarkSeries()">
-          <option value="">지수 선택...</option>
+        <select x-model="selectedIndex" @change="onBenchmarkIndexChange()">
+          <option value="">지수를 선택하세요...</option>
           <template x-for="b in benchmarks" :key="b.index_code">
-            <option :value="b.index_code" x-text="b.index_code + (b.index_name ? ' (' + b.index_name + ')' : '') + ' — ' + fmt(b.record_count) + '건'"></option>
+            <option :value="b.index_code" x-text="b.index_code + ' (' + fmt(b.record_count) + '건)'"></option>
+          </template>
+        </select>
+        <select x-model="selectedSeries" @change="loadBenchmarkSeries()" :disabled="!selectedIndex">
+          <option value="">시리즈를 선택하세요...</option>
+          <template x-for="s in benchSeriesOptions" :key="s.index_name">
+            <option :value="s.index_name" x-text="s.index_name + ' (' + fmt(s.record_count) + '건)'"></option>
           </template>
         </select>
         <input type="date" x-model="benchFrom">
         <input type="date" x-model="benchTo">
-        <button @click="loadBenchmarkSeries()" :disabled="!selectedIndex">조회</button>
+        <button @click="loadBenchmarkSeries()" :disabled="!selectedIndex || !selectedSeries">조회</button>
       </div>
       <div x-show="benchLoading" class="loading">로딩 중...</div>
-      <div x-show="!benchLoading && benchSeries.length === 0 && selectedIndex" class="empty">데이터가 없습니다</div>
+      <div x-show="!benchLoading && benchSeries.length === 0 && selectedSeries" class="empty">조회된 데이터가 없습니다</div>
       <div x-show="benchSeries.length > 0">
         <div class="chart-wrap">
           <canvas id="benchChart"></canvas>
         </div>
         <table style="margin-top:1rem">
           <thead>
-            <tr><th>날짜</th><th>시가</th><th>고가</th><th>저가</th><th>종가</th><th>등락률(%)</th></tr>
+            <tr><th>일자</th><th>시가</th><th>고가</th><th>저가</th><th>종가</th><th>등락률(%)</th></tr>
           </thead>
           <tbody>
             <template x-for="b in benchSeries" :key="b.trade_date">
@@ -249,13 +274,12 @@
     </div>
   </div>
 
-  <!-- ============ QUALITY ============ -->
   <div x-show="activeTab === 'quality'">
     <div class="section">
-      <h2>데이터 품질 이슈 (미해결)</h2>
+      <h2>데이터 이슈 현황 (미해결)</h2>
       <div class="controls">
         <select x-model="qualitySeverity" @change="loadQualityIssues()">
-          <option value="">전체 심각도</option>
+          <option value="">전체 등급</option>
           <option value="ERROR">ERROR</option>
           <option value="WARN">WARN</option>
           <option value="INFO">INFO</option>
@@ -265,7 +289,7 @@
       <div x-show="!qualityLoading && qualityIssues.length === 0" class="empty">미해결 이슈가 없습니다</div>
       <table x-show="!qualityLoading && qualityIssues.length > 0">
         <thead>
-          <tr><th>심각도</th><th>데이터셋</th><th>날짜</th><th>종목/지수</th><th>이슈코드</th><th>상세</th><th>감지시각</th></tr>
+          <tr><th>등급</th><th>데이터셋</th><th>일자</th><th>종목/지수</th><th>이슈코드</th><th>상세</th><th>감지시각</th></tr>
         </thead>
         <tbody>
           <template x-for="q in qualityIssues" :key="q.issue_id">
@@ -290,28 +314,35 @@
 function dashboard() {
   return {
     tabs: [
-      { id: 'overview',     label: 'Overview' },
-      { id: 'instruments',  label: 'Instruments' },
-      { id: 'prices',       label: 'Prices' },
-      { id: 'benchmarks',   label: 'Benchmarks' },
-      { id: 'quality',      label: 'Quality' },
+      { id: 'overview', label: '개요' },
+      { id: 'instruments', label: '종목' },
+      { id: 'prices', label: '시세' },
+      { id: 'benchmarks', label: '벤치마크' },
+      { id: 'quality', label: '품질' },
     ],
     activeTab: 'overview',
     lastRefresh: '-',
 
-    // Overview
     summary: {},
     runs: [],
     runsLoading: false,
 
-    // Instruments
     instruments: { total: 0, items: [] },
     instrSearch: '',
+    instrFilters: {
+      external_code: '',
+      instrument_name: '',
+      market_code: '',
+      security_group: '',
+      sector_name: '',
+      listed_status: '',
+    },
+    instrSortBy: 'market_code',
+    instrSortOrder: 'asc',
     instrPage: 1,
     instrSize: 50,
     instrLoading: false,
 
-    // Prices
     prices: [],
     priceInstrId: '',
     priceFrom: '',
@@ -320,16 +351,19 @@ function dashboard() {
     priceQueried: false,
     _priceChart: null,
 
-    // Benchmarks
     benchmarks: [],
+    benchSeriesOptions: [],
     benchSeries: [],
     selectedIndex: '',
+    selectedSeries: '',
     benchFrom: '',
     benchTo: '',
     benchLoading: false,
+    benchTotal: 0,
+    benchLimit: 1000,
+    benchOffset: 0,
     _benchChart: null,
 
-    // Quality
     qualityIssues: [],
     qualitySeverity: '',
     qualityLoading: false,
@@ -359,9 +393,48 @@ function dashboard() {
     async loadInstruments(page) {
       this.instrPage = page;
       this.instrLoading = true;
-      const q = new URLSearchParams({ search: this.instrSearch, page, size: this.instrSize });
+      const q = new URLSearchParams({
+        search: this.instrSearch,
+        page,
+        size: this.instrSize,
+        sort_by: this.instrSortBy,
+        sort_order: this.instrSortOrder,
+      });
+      Object.entries(this.instrFilters).forEach(([k, v]) => {
+        if (v && String(v).trim()) q.set(k, String(v).trim());
+      });
       this.instruments = await fetch('/api/v1/dashboard/instruments?' + q).then(r => r.json()).catch(() => ({ total: 0, items: [] }));
       this.instrLoading = false;
+    },
+
+    resetInstrumentFilters() {
+      this.instrSearch = '';
+      this.instrFilters = {
+        external_code: '',
+        instrument_name: '',
+        market_code: '',
+        security_group: '',
+        sector_name: '',
+        listed_status: '',
+      };
+      this.instrSortBy = 'market_code';
+      this.instrSortOrder = 'asc';
+      this.loadInstruments(1);
+    },
+
+    sortInstruments(column) {
+      if (this.instrSortBy === column) {
+        this.instrSortOrder = this.instrSortOrder === 'asc' ? 'desc' : 'asc';
+      } else {
+        this.instrSortBy = column;
+        this.instrSortOrder = 'asc';
+      }
+      this.loadInstruments(1);
+    },
+
+    sortMark(column) {
+      if (this.instrSortBy !== column) return '';
+      return this.instrSortOrder === 'asc' ? '▲' : '▼';
     },
 
     async loadPrices() {
@@ -370,7 +443,7 @@ function dashboard() {
       this.priceQueried = true;
       const q = new URLSearchParams({ instrument_id: this.priceInstrId.trim() });
       if (this.priceFrom) q.set('date_from', this.priceFrom);
-      if (this.priceTo)   q.set('date_to',   this.priceTo);
+      if (this.priceTo) q.set('date_to', this.priceTo);
       const data = await fetch('/api/v1/dashboard/prices?' + q).then(r => r.json()).catch(() => ({ items: [] }));
       this.prices = (data.items || []).slice().reverse();
       this.priceLoading = false;
@@ -405,14 +478,33 @@ function dashboard() {
       this.benchmarks = await fetch('/api/v1/dashboard/benchmarks').then(r => r.json()).catch(() => []);
     },
 
-    async loadBenchmarkSeries() {
+    async onBenchmarkIndexChange() {
+      this.selectedSeries = '';
+      this.benchSeries = [];
+      this.benchSeriesOptions = [];
+      this.benchTotal = 0;
+      this.benchOffset = 0;
       if (!this.selectedIndex) return;
+      const q = new URLSearchParams({ index_code: this.selectedIndex });
+      this.benchSeriesOptions = await fetch('/api/v1/dashboard/benchmark-series?' + q).then(r => r.json()).catch(() => []);
+      if (this.benchSeriesOptions.length > 0) {
+        this.selectedSeries = this.benchSeriesOptions[0].index_name;
+        await this.loadBenchmarkSeries();
+      }
+    },
+
+    async loadBenchmarkSeries() {
+      if (!this.selectedIndex || !this.selectedSeries) return;
       this.benchLoading = true;
       const q = new URLSearchParams();
+      q.set('series_name', this.selectedSeries);
       if (this.benchFrom) q.set('date_from', this.benchFrom);
-      if (this.benchTo)   q.set('date_to',   this.benchTo);
+      if (this.benchTo) q.set('date_to', this.benchTo);
+      q.set('limit', this.benchLimit);
+      q.set('offset', this.benchOffset);
       const data = await fetch(`/api/v1/dashboard/benchmarks/${encodeURIComponent(this.selectedIndex)}?` + q)
         .then(r => r.json()).catch(() => ({ items: [] }));
+      this.benchTotal = data.total || 0;
       this.benchSeries = (data.items || []).slice().reverse();
       this.benchLoading = false;
       await this.$nextTick();
@@ -428,7 +520,7 @@ function dashboard() {
         data: {
           labels: this.benchSeries.map(b => b.trade_date),
           datasets: [{
-            label: this.selectedIndex,
+            label: this.selectedSeries ? `${this.selectedIndex}/${this.selectedSeries}` : this.selectedIndex,
             data: this.benchSeries.map(b => b.close),
             borderColor: '#2c6fad',
             backgroundColor: 'rgba(44,111,173,.08)',
@@ -450,12 +542,11 @@ function dashboard() {
       this.qualityLoading = false;
     },
 
-    // Helpers
     fmt(n) {
       if (n == null || n === '-') return '-';
       if (typeof n === 'number') return n.toLocaleString('ko-KR');
       const num = Number(n);
-      return isNaN(num) ? n : num.toLocaleString('ko-KR');
+      return Number.isNaN(num) ? n : num.toLocaleString('ko-KR');
     },
 
     elapsed(start, end) {
@@ -465,8 +556,7 @@ function dashboard() {
     },
 
     statusBadge(status) {
-      const map = { SUCCESS: 'badge badge-success', PARTIAL: 'badge badge-partial',
-                    FAILED: 'badge badge-failed', RUNNING: 'badge badge-running' };
+      const map = { SUCCESS: 'badge badge-success', PARTIAL: 'badge badge-partial', FAILED: 'badge badge-failed', RUNNING: 'badge badge-running' };
       return map[status] || 'badge';
     },
 

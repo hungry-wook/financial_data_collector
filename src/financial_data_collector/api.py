@@ -12,6 +12,7 @@ class BacktestExportAPI:
             req = ExportRequest(
                 market_code=body["market_code"],
                 index_codes=body["index_codes"],
+                series_names=body.get("series_names"),
                 date_from=body["date_from"],
                 date_to=body["date_to"],
                 include_issues=bool(body.get("include_issues", False)),
@@ -34,4 +35,3 @@ class BacktestExportAPI:
             return 200, self.service.get_manifest(job_id)
         except KeyError as exc:
             return 404, {"error": str(exc)}
-

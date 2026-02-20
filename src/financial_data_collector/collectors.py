@@ -187,7 +187,7 @@ class BenchmarkCollector:
         now = _utc_now_iso()
         normalized = []
         issues = []
-        dates_by_index: Dict[str, set] = {}
+        dates_by_series: Dict[tuple, set] = {}
         for r in rows:
             raw_index_code = str(r.get("index_code", "")).upper()
             if raw_index_code not in self.index_code_map:
@@ -207,16 +207,33 @@ class BenchmarkCollector:
                 continue
 
             index_code = self.index_code_map[raw_index_code]
+            index_name = str(r.get("index_name") or index_code).strip() or index_code
             try:
                 trade_date = _normalize_date(r.get("trade_date"))
-                open_price = float(r["open"])
-                high_price = float(r["high"])
-                low_price = float(r["low"])
-                close_price = float(r["close"])
-                if high_price < max(open_price, close_price, low_price):
-                    raise ValueError("high is inconsistent")
-                if low_price > min(open_price, close_price, high_price):
-                    raise ValueError("low is inconsistent")
+                close_raw = r.get("close")
+                if close_raw is None:
+                    raise ValueError("close is required")
+
+                open_raw = r.get("open")
+                high_raw = r.get("high")
+                low_raw = r.get("low")
+
+                open_price = float(open_raw) if open_raw is not None else None
+                high_price = float(high_raw) if high_raw is not None else None
+                low_price = float(low_raw) if low_raw is not None else None
+                close_price = float(close_raw)
+
+                status = str(r.get("record_status") or "VALID").upper()
+                if status not in {"VALID", "PARTIAL", "INVALID"}:
+                    status = "VALID"
+                if status == "VALID" and None in (open_price, high_price, low_price):
+                    status = "PARTIAL"
+
+                if status == "VALID":
+                    if high_price < max(open_price, close_price, low_price):
+                        raise ValueError("high is inconsistent")
+                    if low_price > min(open_price, close_price, high_price):
+                        raise ValueError("low is inconsistent")
             except (KeyError, TypeError, ValueError) as exc:
                 issues.append(
                     _issue(
@@ -228,7 +245,7 @@ class BenchmarkCollector:
                         run_id=run_id,
                         trade_date=_to_iso(r.get("trade_date")),
                         index_code=index_code,
-                        issue_detail=str(exc),
+                        issue_detail=f"{index_name}: {exc}",
                     )
                 )
                 continue
@@ -239,28 +256,48 @@ class BenchmarkCollector:
             price_change = r.get("price_change")
             change_rate = r.get("change_rate")
 
+            if status == "PARTIAL":
+                issues.append(
+                    _issue(
+                        dataset_name="benchmark_index_data",
+                        issue_code="BENCHMARK_PARTIAL_OHLC",
+                        severity="WARN",
+                        source_name=source_name,
+                        detected_at=now,
+                        run_id=run_id,
+                        trade_date=trade_date,
+                        index_code=index_code,
+                        issue_detail=f"index_name={index_name}",
+                    )
+                )
+
             normalized.append(
                 {
                     "index_code": index_code,
+                    "index_name": index_name,
                     "trade_date": trade_date,
                     "open": open_price,
                     "high": high_price,
                     "low": low_price,
                     "close": close_price,
+                    "raw_open": r.get("raw_open"),
+                    "raw_high": r.get("raw_high"),
+                    "raw_low": r.get("raw_low"),
+                    "raw_close": r.get("raw_close"),
                     "volume": int(volume) if volume is not None else None,
                     "turnover_value": float(turnover_value) if turnover_value is not None else None,
                     "market_cap": float(market_cap) if market_cap is not None else None,
                     "price_change": float(price_change) if price_change is not None else None,
                     "change_rate": float(change_rate) if change_rate is not None else None,
-                    "index_name": r.get("index_name"),
+                    "record_status": status,
                     "source_name": source_name,
                     "collected_at": now,
                     "run_id": run_id,
                 }
             )
-            dates_by_index.setdefault(index_code, set()).add(date.fromisoformat(trade_date))
+            dates_by_series.setdefault((index_code, index_name), set()).add(date.fromisoformat(trade_date))
 
-        for index_code, trade_dates in dates_by_index.items():
+        for (index_code, index_name), trade_dates in dates_by_series.items():
             if len(trade_dates) <= 1:
                 continue
             start = min(trade_dates)
@@ -278,7 +315,7 @@ class BenchmarkCollector:
                             run_id=run_id,
                             trade_date=current.isoformat(),
                             index_code=index_code,
-                            issue_detail=f"missing benchmark day for {index_code}",
+                            issue_detail=f"missing benchmark day for {index_code}/{index_name}",
                         )
                     )
                 current += timedelta(days=1)

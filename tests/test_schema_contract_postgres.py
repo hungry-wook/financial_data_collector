@@ -58,10 +58,10 @@ def test_pg_benchmark_ohlc_constraint(pg_conn):
             cur.execute(
                 """
                 INSERT INTO benchmark_index_data(
-                    index_code, trade_date, open, high, low, close, source_name, collected_at, run_id
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, now(), %s)
+                    index_code, index_name, trade_date, open, high, low, close, source_name, collected_at, run_id
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now(), %s)
                 """,
-                ("KOSDAQ", "2026-01-02", 100, 99, 98, 99.5, "t", None),
+                ("KOSDAQ", "KOSDAQ", "2026-01-02", 100, 99, 98, 99.5, "t", None),
             )
         pg_conn.commit()
     pg_conn.rollback()

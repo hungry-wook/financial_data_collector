@@ -75,17 +75,36 @@ CREATE TABLE daily_market_data (
 
 CREATE TABLE benchmark_index_data (
     index_code VARCHAR(30) NOT NULL,
+    index_name VARCHAR(200) NOT NULL,
     trade_date DATE NOT NULL,
-    open NUMERIC(20,6) NOT NULL,
-    high NUMERIC(20,6) NOT NULL,
-    low NUMERIC(20,6) NOT NULL,
+    open NUMERIC(20,6) NULL,
+    high NUMERIC(20,6) NULL,
+    low NUMERIC(20,6) NULL,
     close NUMERIC(20,6) NOT NULL,
+    raw_open VARCHAR(40) NULL,
+    raw_high VARCHAR(40) NULL,
+    raw_low VARCHAR(40) NULL,
+    raw_close VARCHAR(40) NULL,
+    volume BIGINT NULL,
+    turnover_value NUMERIC(28,6) NULL,
+    market_cap NUMERIC(28,6) NULL,
+    price_change NUMERIC(20,6) NULL,
+    change_rate NUMERIC(20,6) NULL,
+    record_status VARCHAR(20) NOT NULL DEFAULT 'VALID',
     source_name VARCHAR(30) NOT NULL,
     collected_at TIMESTAMP NOT NULL,
     run_id UUID NULL,
-    PRIMARY KEY (index_code, trade_date),
-    CHECK (high >= GREATEST(open, close, low)),
-    CHECK (low <= LEAST(open, close, high))
+    PRIMARY KEY (index_code, index_name, trade_date),
+    CHECK (
+      open IS NULL OR high IS NULL OR low IS NULL OR close IS NULL
+      OR high >= GREATEST(open, close, low)
+    ),
+    CHECK (
+      open IS NULL OR high IS NULL OR low IS NULL OR close IS NULL
+      OR low <= LEAST(open, close, high)
+    ),
+    CHECK (volume IS NULL OR volume >= 0),
+    CHECK (record_status IN ('VALID', 'PARTIAL', 'INVALID'))
 );
 
 CREATE TABLE data_quality_issues (
@@ -132,6 +151,7 @@ CREATE INDEX idx_instruments_market_code ON instruments(market_code, external_co
 CREATE INDEX idx_daily_trade_date ON daily_market_data(trade_date);
 CREATE INDEX idx_daily_status_date ON daily_market_data(record_status, trade_date);
 CREATE INDEX idx_index_trade_date ON benchmark_index_data(index_code, trade_date);
+CREATE INDEX idx_index_series_trade_date ON benchmark_index_data(index_code, index_name, trade_date);
 CREATE INDEX idx_calendar_market_open_date ON trading_calendar(market_code, is_open, trade_date);
 CREATE INDEX idx_issues_date ON data_quality_issues(trade_date, severity);
 CREATE INDEX idx_issues_instrument_date ON data_quality_issues(instrument_id, trade_date);
@@ -163,11 +183,18 @@ JOIN instruments i ON i.instrument_id = d.instrument_id;
 
 CREATE VIEW benchmark_dataset_v1 AS
 SELECT index_code,
+       index_name,
        trade_date,
        open,
        high,
        low,
        close,
+       volume,
+       turnover_value,
+       market_cap,
+       price_change,
+       change_rate,
+       record_status,
        source_name,
        collected_at
 FROM benchmark_index_data;

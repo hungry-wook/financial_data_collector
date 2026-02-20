@@ -25,6 +25,7 @@ export_service: ExportService = None
 class ExportRequestBody(BaseModel):
     market_code: str
     index_codes: list[str]
+    series_names: list[str] | None = None
     date_from: str
     date_to: str
     include_issues: bool = False

@@ -202,11 +202,13 @@ def test_parquet_schema_snapshot_benchmark_daily(repo, tmp_path):
     svc.run_job(job["job_id"])
     assert writer.schemas["benchmark_daily.parquet"] == [
         "index_code",
+        "index_name",
         "trade_date",
         "open",
         "high",
         "low",
         "close",
+        "record_status",
     ]
 
 

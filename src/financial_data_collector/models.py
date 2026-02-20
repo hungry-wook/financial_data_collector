@@ -54,11 +54,13 @@ class DailyMarketRow:
 @dataclass
 class BenchmarkRow:
     index_code: str
+    index_name: str
     trade_date: date
-    open: float
-    high: float
-    low: float
+    open: Optional[float]
+    high: Optional[float]
+    low: Optional[float]
     close: float
+    record_status: str
     source_name: str
     collected_at: datetime
     run_id: Optional[str]
@@ -88,4 +90,3 @@ class DataQualityIssue:
     detected_at: datetime
     run_id: Optional[str]
     resolved_at: Optional[datetime] = None
-

@@ -108,24 +108,36 @@ class Repository:
 
                 CREATE TABLE IF NOT EXISTS benchmark_index_data (
                     index_code TEXT NOT NULL,
+                    index_name TEXT NOT NULL,
                     trade_date TEXT NOT NULL,
-                    open REAL NOT NULL,
-                    high REAL NOT NULL,
-                    low REAL NOT NULL,
-                    close REAL NOT NULL,
+                    open REAL NULL,
+                    high REAL NULL,
+                    low REAL NULL,
+                    close REAL NULL,
+                    raw_open TEXT NULL,
+                    raw_high TEXT NULL,
+                    raw_low TEXT NULL,
+                    raw_close TEXT NULL,
                     volume INTEGER NULL,
                     turnover_value REAL NULL,
                     market_cap REAL NULL,
                     price_change REAL NULL,
                     change_rate REAL NULL,
-                    index_name TEXT NULL,
+                    record_status TEXT NOT NULL DEFAULT 'VALID',
                     source_name TEXT NOT NULL,
                     collected_at TEXT NOT NULL,
                     run_id TEXT NULL,
-                    PRIMARY KEY (index_code, trade_date),
-                    CHECK (high >= MAX(open, close, low)),
-                    CHECK (low <= MIN(open, close, high)),
+                    PRIMARY KEY (index_code, index_name, trade_date),
+                    CHECK (
+                        open IS NULL OR high IS NULL OR low IS NULL OR close IS NULL
+                        OR high >= MAX(open, close, low)
+                    ),
+                    CHECK (
+                        open IS NULL OR high IS NULL OR low IS NULL OR close IS NULL
+                        OR low <= MIN(open, close, high)
+                    ),
                     CHECK (volume IS NULL OR volume >= 0),
+                    CHECK (record_status IN ('VALID', 'PARTIAL', 'INVALID')),
                     FOREIGN KEY (run_id) REFERENCES collection_runs(run_id)
                 );
 
@@ -173,14 +185,119 @@ class Repository:
 
                 DROP VIEW IF EXISTS benchmark_dataset_v1;
                 CREATE VIEW benchmark_dataset_v1 AS
-                SELECT index_code, trade_date, open, high, low, close, source_name, collected_at
+                SELECT index_code, index_name, trade_date, open, high, low, close, volume,
+                       turnover_value, market_cap, price_change, change_rate, record_status,
+                       source_name, collected_at
                 FROM benchmark_index_data;
 
                 CREATE VIEW IF NOT EXISTS trading_calendar_v1 AS
                 SELECT market_code, trade_date, is_open, holiday_name, source_name, collected_at
                 FROM trading_calendar;
+
+                CREATE INDEX IF NOT EXISTS idx_benchmark_code_date ON benchmark_index_data(index_code, trade_date);
+                CREATE INDEX IF NOT EXISTS idx_benchmark_series_date ON benchmark_index_data(index_code, index_name, trade_date DESC);
+                CREATE INDEX IF NOT EXISTS idx_benchmark_status_date ON benchmark_index_data(record_status, trade_date);
                 """
             )
+            self._migrate_benchmark_table(conn)
+
+    @staticmethod
+    def _table_columns(conn: sqlite3.Connection, table_name: str) -> List[str]:
+        rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return [str(row["name"]) for row in rows]
+
+    def _migrate_benchmark_table(self, conn: sqlite3.Connection) -> None:
+        cols = self._table_columns(conn, "benchmark_index_data")
+        if not cols:
+            return
+
+        required = {
+            "index_name",
+            "raw_open",
+            "raw_high",
+            "raw_low",
+            "raw_close",
+            "record_status",
+        }
+
+        pk_rows = conn.execute("PRAGMA table_info(benchmark_index_data)").fetchall()
+        pk_cols = [str(r["name"]) for r in pk_rows if int(r["pk"]) > 0]
+        is_new_pk = pk_cols == ["index_code", "index_name", "trade_date"]
+        if required.issubset(set(cols)) and is_new_pk:
+            return
+
+        conn.executescript(
+            """
+            DROP VIEW IF EXISTS benchmark_dataset_v1;
+
+            CREATE TABLE benchmark_index_data_new (
+                index_code TEXT NOT NULL,
+                index_name TEXT NOT NULL,
+                trade_date TEXT NOT NULL,
+                open REAL NULL,
+                high REAL NULL,
+                low REAL NULL,
+                close REAL NULL,
+                raw_open TEXT NULL,
+                raw_high TEXT NULL,
+                raw_low TEXT NULL,
+                raw_close TEXT NULL,
+                volume INTEGER NULL,
+                turnover_value REAL NULL,
+                market_cap REAL NULL,
+                price_change REAL NULL,
+                change_rate REAL NULL,
+                record_status TEXT NOT NULL DEFAULT 'VALID',
+                source_name TEXT NOT NULL,
+                collected_at TEXT NOT NULL,
+                run_id TEXT NULL,
+                PRIMARY KEY (index_code, index_name, trade_date),
+                CHECK (
+                    open IS NULL OR high IS NULL OR low IS NULL OR close IS NULL
+                    OR high >= MAX(open, close, low)
+                ),
+                CHECK (
+                    open IS NULL OR high IS NULL OR low IS NULL OR close IS NULL
+                    OR low <= MIN(open, close, high)
+                ),
+                CHECK (volume IS NULL OR volume >= 0),
+                CHECK (record_status IN ('VALID', 'PARTIAL', 'INVALID')),
+                FOREIGN KEY (run_id) REFERENCES collection_runs(run_id)
+            );
+            """
+        )
+
+        has_index_name = "index_name" in cols
+        select_index_name = "COALESCE(NULLIF(TRIM(index_name), ''), index_code)" if has_index_name else "index_code"
+        conn.execute(
+            f"""
+            INSERT INTO benchmark_index_data_new(
+                index_code, index_name, trade_date, open, high, low, close,
+                volume, turnover_value, market_cap, price_change, change_rate,
+                record_status, source_name, collected_at, run_id
+            )
+            SELECT index_code, {select_index_name}, trade_date, open, high, low, close,
+                   volume, turnover_value, market_cap, price_change, change_rate,
+                   'VALID', source_name, collected_at, run_id
+            FROM benchmark_index_data
+            """
+        )
+        conn.executescript(
+            """
+            DROP TABLE benchmark_index_data;
+            ALTER TABLE benchmark_index_data_new RENAME TO benchmark_index_data;
+
+            CREATE VIEW benchmark_dataset_v1 AS
+            SELECT index_code, index_name, trade_date, open, high, low, close, volume,
+                   turnover_value, market_cap, price_change, change_rate, record_status,
+                   source_name, collected_at
+            FROM benchmark_index_data;
+
+            CREATE INDEX IF NOT EXISTS idx_benchmark_code_date ON benchmark_index_data(index_code, trade_date);
+            CREATE INDEX IF NOT EXISTS idx_benchmark_series_date ON benchmark_index_data(index_code, index_name, trade_date DESC);
+            CREATE INDEX IF NOT EXISTS idx_benchmark_status_date ON benchmark_index_data(record_status, trade_date);
+            """
+        )
 
     def insert_run(self, run: Dict) -> None:
         with self.connect() as conn:
@@ -318,20 +435,26 @@ class Repository:
             conn.executemany(
                 """
                 INSERT INTO benchmark_index_data(
-                    index_code, trade_date, open, high, low, close, volume, turnover_value,
-                    market_cap, price_change, change_rate, index_name, source_name, collected_at, run_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(index_code, trade_date) DO UPDATE SET
+                    index_code, index_name, trade_date, open, high, low, close,
+                    raw_open, raw_high, raw_low, raw_close,
+                    volume, turnover_value, market_cap, price_change, change_rate,
+                    record_status, source_name, collected_at, run_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(index_code, index_name, trade_date) DO UPDATE SET
                     open=excluded.open,
                     high=excluded.high,
                     low=excluded.low,
                     close=excluded.close,
+                    raw_open=excluded.raw_open,
+                    raw_high=excluded.raw_high,
+                    raw_low=excluded.raw_low,
+                    raw_close=excluded.raw_close,
                     volume=excluded.volume,
                     turnover_value=excluded.turnover_value,
                     market_cap=excluded.market_cap,
                     price_change=excluded.price_change,
                     change_rate=excluded.change_rate,
-                    index_name=excluded.index_name,
+                    record_status=excluded.record_status,
                     source_name=excluded.source_name,
                     collected_at=excluded.collected_at,
                     run_id=excluded.run_id
@@ -339,17 +462,22 @@ class Repository:
                 [
                     (
                         r["index_code"],
+                        (r.get("index_name") or r["index_code"]),
                         r["trade_date"],
                         r["open"],
                         r["high"],
                         r["low"],
                         r["close"],
+                        r.get("raw_open"),
+                        r.get("raw_high"),
+                        r.get("raw_low"),
+                        r.get("raw_close"),
                         r.get("volume"),
                         r.get("turnover_value"),
                         r.get("market_cap"),
                         r.get("price_change"),
                         r.get("change_rate"),
-                        r.get("index_name"),
+                        r.get("record_status", "VALID"),
                         r["source_name"],
                         r["collected_at"],
                         r.get("run_id"),
@@ -430,17 +558,33 @@ class Repository:
             (market_code, date_from, date_to),
         )
 
-    def get_benchmark(self, index_codes: Iterable[str], date_from: str, date_to: str) -> List[Dict]:
+    def get_benchmark(
+        self,
+        index_codes: Iterable[str],
+        date_from: str,
+        date_to: str,
+        series_names: Optional[Iterable[str]] = None,
+    ) -> List[Dict]:
         codes = list(index_codes)
+        if not codes:
+            return []
         placeholders = ", ".join(["?"] * len(codes))
-        params = codes + [date_from, date_to]
+        params: List = codes + [date_from, date_to]
+        where_series = ""
+        if series_names:
+            names = [n for n in series_names if n]
+            if names:
+                series_placeholders = ", ".join(["?"] * len(names))
+                where_series = f" AND index_name IN ({series_placeholders})"
+                params.extend(names)
         return self.query(
             f"""
-            SELECT index_code, trade_date, open, high, low, close
+            SELECT index_code, index_name, trade_date, open, high, low, close, record_status
             FROM benchmark_dataset_v1
             WHERE index_code IN ({placeholders})
               AND trade_date BETWEEN ? AND ?
-            ORDER BY trade_date, index_code
+              {where_series}
+            ORDER BY trade_date, index_code, index_name
             """,
             tuple(params),
         )

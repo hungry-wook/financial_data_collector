@@ -22,6 +22,7 @@ class ExportRequest:
     include_issues: bool
     output_format: str
     output_path: str
+    series_names: Optional[List[str]] = None
 
 
 class ExportService:
@@ -56,7 +57,12 @@ class ExportService:
 
         try:
             instrument_rows = self.repo.get_core_market(req.market_code, req.date_from, req.date_to)
-            benchmark_rows = self.repo.get_benchmark(req.index_codes, req.date_from, req.date_to)
+            benchmark_rows = self.repo.get_benchmark(
+                req.index_codes,
+                req.date_from,
+                req.date_to,
+                series_names=req.series_names,
+            )
             calendar_rows = self.repo.get_calendar(req.market_code, req.date_from, req.date_to)
             issue_rows = self.repo.get_issues(req.date_from, req.date_to) if req.include_issues else []
             job["progress"] = 60
@@ -77,6 +83,7 @@ class ExportService:
                 "job_id": job_id,
                 "market_code": req.market_code,
                 "index_codes": req.index_codes,
+                "series_names": req.series_names or [],
                 "date_from": req.date_from,
                 "date_to": req.date_to,
                 "schema_version": "phase1-v1",

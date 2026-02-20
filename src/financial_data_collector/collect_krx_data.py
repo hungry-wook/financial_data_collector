@@ -60,6 +60,13 @@ def _parse_number(value: Any, default: Optional[float] = None) -> Optional[float
         return default
 
 
+def _raw_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text if text else None
+
+
 def _normalize_instrument_code(value: Any) -> Optional[str]:
     if value in (None, ""):
         return None
@@ -238,23 +245,21 @@ def _normalize_daily_market(rows: List[Dict[str, Any]], trade_date: date) -> Lis
 def _normalize_benchmark(rows: List[Dict[str, Any]], index_code: str, trade_date: date) -> List[Dict[str, Any]]:
     normalized: List[Dict[str, Any]] = []
     for row in rows:
-        # FIX: Add _IDX suffix fields which are the actual KRX API field names
-        open_price = _parse_number(_first_not_none(row, ["open", "OPNPRC_IDX", "OPNPRC", "opnprc", "TDD_OPNPRC", "tdd_opnprc"]))
-        high_price = _parse_number(_first_not_none(row, ["high", "HGPRC_IDX", "HGPRC", "hgprc", "TDD_HGPRC", "tdd_hgprc"]))
-        low_price = _parse_number(_first_not_none(row, ["low", "LWPRC_IDX", "LWPRC", "lwprc", "TDD_LWPRC", "tdd_lwprc"]))
-        close_price = _parse_number(_first_not_none(row, ["close", "CLSPRC_IDX", "CLSPRC", "clsprc", "TDD_CLSPRC", "tdd_clsprc"]))
-        if None in (open_price, high_price, low_price, close_price):
+        raw_open = _raw_text(_first_not_none(row, ["open", "OPNPRC_IDX", "OPNPRC", "opnprc", "TDD_OPNPRC", "tdd_opnprc"]))
+        raw_high = _raw_text(_first_not_none(row, ["high", "HGPRC_IDX", "HGPRC", "hgprc", "TDD_HGPRC", "tdd_hgprc"]))
+        raw_low = _raw_text(_first_not_none(row, ["low", "LWPRC_IDX", "LWPRC", "lwprc", "TDD_LWPRC", "tdd_lwprc"]))
+        raw_close = _raw_text(_first_not_none(row, ["close", "CLSPRC_IDX", "CLSPRC", "clsprc", "TDD_CLSPRC", "tdd_clsprc"]))
+
+        open_price = _parse_number(raw_open)
+        high_price = _parse_number(raw_high)
+        low_price = _parse_number(raw_low)
+        close_price = _parse_number(raw_close)
+        if close_price is None:
             continue
 
-        volume_for_halt = _parse_number(_first_not_none(row, ["volume", "ACC_TRDVOL", "acc_trdvol"]), 0)
-        if int(volume_for_halt or 0) == 0 and close_price != 0:
-            if high_price == 0 or low_price == 0:
-                if open_price == 0:
-                    open_price = close_price
-                if high_price == 0:
-                    high_price = max(open_price, close_price)
-                if low_price == 0:
-                    low_price = min(open_price, close_price)
+        status = "VALID"
+        if None in (open_price, high_price, low_price):
+            status = "PARTIAL"
 
         # Parse volume with proper handling
         volume_raw = _parse_number(_first_not_none(row, ["volume", "ACC_TRDVOL", "acc_trdvol"]), None)
@@ -268,12 +273,17 @@ def _normalize_benchmark(rows: List[Dict[str, Any]], index_code: str, trade_date
                 "high": high_price,
                 "low": low_price,
                 "close": close_price,
+                "raw_open": raw_open,
+                "raw_high": raw_high,
+                "raw_low": raw_low,
+                "raw_close": raw_close,
                 "volume": volume,
                 "turnover_value": _parse_number(_first_not_none(row, ["turnover_value", "ACC_TRDVAL", "acc_trdval"]), None),
                 "market_cap": _parse_number(_first_not_none(row, ["market_cap", "MKTCAP", "mktcap"]), None),
                 "price_change": _parse_number(_first_not_none(row, ["price_change", "CMPPREVDD_IDX", "cmpprevdd_idx"]), None),
                 "change_rate": _parse_number(_first_not_none(row, ["change_rate", "FLUC_RT", "fluc_rt"]), None),
-                "index_name": str(_first_not_none(row, ["index_name", "IDX_NM", "idx_nm"]) or ""),
+                "index_name": str(_first_not_none(row, ["index_name", "IDX_NM", "idx_nm"]) or index_code).strip() or index_code,
+                "record_status": status,
             }
         )
     return normalized

@@ -146,11 +146,18 @@ def test_v1_view_columns_are_backward_compatible(repo):
     ]
     assert benchmark_cols == [
         "index_code",
+        "index_name",
         "trade_date",
         "open",
         "high",
         "low",
         "close",
+        "volume",
+        "turnover_value",
+        "market_cap",
+        "price_change",
+        "change_rate",
+        "record_status",
         "source_name",
         "collected_at",
     ]
