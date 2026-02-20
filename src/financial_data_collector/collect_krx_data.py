@@ -306,7 +306,12 @@ def run_collection(
 
     client = KRXClient(KRXClientConfig.from_settings(settings))
     run_manager = RunManager(repo)
-    run_id = run_manager.start("phase1-collect", source_name, date_from.isoformat(), date_to.isoformat())
+    run_id = run_manager.start(
+        f"phase1-collect-{market_code.upper()}",
+        source_name,
+        date_from.isoformat(),
+        date_to.isoformat(),
+    )
 
     logger.info(f"Starting collection for {market_code}/{index_code} from {date_from} to {date_to}")
 
