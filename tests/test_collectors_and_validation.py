@@ -35,7 +35,7 @@ def test_instrument_collect_upsert(repo):
         "krx",
     )
     assert count == 1
-    rows = repo.query("SELECT market_code FROM instruments WHERE instrument_id='i1'")
+    rows = repo.query("SELECT market_code FROM instruments WHERE external_code='0001'")
     assert rows[0]["market_code"] == "KOSDAQ"
 
 
@@ -54,7 +54,7 @@ def test_instrument_date_normalization_failure_records_issue(repo):
         "krx",
     )
     assert count == 0
-    issue = repo.query("SELECT issue_code FROM data_quality_issues WHERE instrument_id='i_bad'")[0]
+    issue = repo.query("SELECT issue_code FROM data_quality_issues")[0]
     assert issue["issue_code"] == "DATE_NORMALIZATION_FAILED"
 
 
@@ -107,7 +107,7 @@ def test_daily_invalid_row_records_issue(repo):
         "r1",
     )
     assert count == 0
-    issue = repo.query("SELECT issue_code FROM data_quality_issues WHERE run_id='r1'")[0]
+    issue = repo.query("SELECT issue_code FROM data_quality_issues")[0]
     assert issue["issue_code"] == "INVALID_DAILY_MARKET_ROW"
 
 
@@ -119,7 +119,7 @@ def test_benchmark_unmapped_index_code_records_issue(repo):
         "r1",
     )
     assert count == 0
-    issue = repo.query("SELECT issue_code FROM data_quality_issues WHERE run_id='r1'")[0]
+    issue = repo.query("SELECT issue_code FROM data_quality_issues")[0]
     assert issue["issue_code"] == "UNMAPPED_INDEX_CODE"
 
 
@@ -149,7 +149,7 @@ def test_calendar_builder(repo):
         run_id="r1",
     )
     assert count == 3
-    open_days = repo.query("SELECT COUNT(1) AS c FROM trading_calendar WHERE is_open=1")[0]["c"]
+    open_days = repo.query("SELECT COUNT(1) AS c FROM trading_calendar WHERE is_open=TRUE")[0]["c"]
     assert open_days == 1
 
 
@@ -165,7 +165,8 @@ def test_validation_open_day_missing_issue(repo):
         run_id="r1",
     )
     v = ValidationJob(repo).validate_range("KOSDAQ", "2026-01-02", "2026-01-02", "r1")
-    assert v["issues"] == 1
+    assert v["errors"] == 0
+    assert v["warnings"] == 1
     issues = repo.query("SELECT issue_code FROM data_quality_issues")
     assert issues[0]["issue_code"] == "OPEN_DAY_TOTAL_MISSING"
 
@@ -198,5 +199,5 @@ def test_validation_no_issue_for_fully_valid_range(repo):
         run_id="r1",
     )
     v = ValidationJob(repo).validate_range("KOSDAQ", "2026-01-02", "2026-01-02", "r1")
-    assert v["issues"] == 0
+    assert v["issues_total"] == 0
     assert len(repo.query("SELECT * FROM data_quality_issues")) == 0

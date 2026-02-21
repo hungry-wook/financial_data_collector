@@ -94,15 +94,20 @@ def test_real_krx_collects_daily_market_to_database(repo):
     client = _build_client_or_skip()
     trade_day = date(2026, 1, 2)  # Known trading day
 
+    # Seed instruments first to satisfy FK in PostgreSQL
+    instruments_payload = _call_or_skip_network(lambda: client.get_instruments("KOSDAQ", trade_day))
+    from financial_data_collector.collect_krx_data import _extract_rows, _normalize_daily_market, _normalize_instruments
+
+    InstrumentCollector(repo).collect(_normalize_instruments(_extract_rows(instruments_payload), "KOSDAQ"), "krx")
+
     # Fetch and extract
     payload = _call_or_skip_network(lambda: client.get_daily_market("KOSDAQ", trade_day))
-    from financial_data_collector.collect_krx_data import _extract_rows, _normalize_daily_market
 
     rows = _extract_rows(payload)
     assert len(rows) > 0, f"Expected rows from API, got empty. Payload keys: {list(payload.keys()) if isinstance(payload, dict) else 'not a dict'}"
 
     # Normalize
-    normalized = _normalize_daily_market(rows, trade_day)
+    normalized = _normalize_daily_market(rows, "KOSDAQ", trade_day)
     assert len(normalized) > 0, f"Expected normalized daily market data, got 0 from {len(rows)} raw rows"
 
     # Collect
@@ -197,4 +202,6 @@ def test_real_krx_smoke_plus_validation_issue_logging(repo):
     issue_codes = {r["issue_code"] for r in issue_rows}
     assert "INVALID_DAILY_MARKET_ROW" in issue_codes
     assert "UNMAPPED_INDEX_CODE" in issue_codes
-    assert isinstance(validation_result["issues"], int)
+    assert isinstance(validation_result["issues_total"], int)
+    assert isinstance(validation_result["errors"], int)
+    assert isinstance(validation_result["warnings"], int)

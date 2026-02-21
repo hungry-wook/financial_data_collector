@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List
+from uuid import UUID
 
 from .repository import Repository
 
@@ -18,6 +19,14 @@ class TradingCalendarBuilder:
         run_id: str,
     ) -> int:
         open_days = {str(d) for d in index_trade_dates}
+        persisted_run_id = None
+        if run_id:
+            try:
+                normalized = str(UUID(str(run_id)))
+                if self.repo.query("SELECT run_id FROM collection_runs WHERE run_id = %s", (normalized,)):
+                    persisted_run_id = normalized
+            except ValueError:
+                persisted_run_id = None
         current = date_from
         rows: List[Dict] = []
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -32,7 +41,7 @@ class TradingCalendarBuilder:
                     "holiday_name": None if day in open_days else "CLOSED",
                     "source_name": source_name,
                     "collected_at": now,
-                    "run_id": run_id,
+                    "run_id": persisted_run_id,
                 }
             )
             current = current + timedelta(days=1)

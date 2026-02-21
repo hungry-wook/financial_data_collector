@@ -74,7 +74,7 @@ def _seed_data(repo):
                 "holiday_name": None,
                 "source_name": "krx",
                 "collected_at": "2026-01-02T00:00:00",
-                "run_id": "r1",
+                "run_id": None,
             }
         ]
     )

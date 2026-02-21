@@ -1,0 +1,89 @@
+﻿services:
+  postgres:
+    image: postgres:16
+    container_name: fdc-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-financial_data}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-financial_data}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build: .
+    container_name: fdc-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-financial_data}
+      KRX_AUTH_KEY: ${KRX_AUTH_KEY}
+      KRX_DAILY_LIMIT: ${KRX_DAILY_LIMIT:-10000}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  collector:
+    build: .
+    container_name: fdc-collector-daily
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-financial_data}
+      KRX_AUTH_KEY: ${KRX_AUTH_KEY}
+      KRX_DAILY_LIMIT: ${KRX_DAILY_LIMIT:-10000}
+      COLLECTOR_INTERVAL_SECONDS: ${COLLECTOR_INTERVAL_SECONDS:-86400}
+      COLLECTOR_DATE_OFFSET_DAYS: ${COLLECTOR_DATE_OFFSET_DAYS:-1}
+    command: >
+      sh -c "while true; do
+      target_date=$$(date -u -d \"-$${COLLECTOR_DATE_OFFSET_DAYS} day\" +%F);
+      echo \"[collector-daily] collecting $$target_date\";
+      uv run python -m financial_data_collector.collect_krx_data
+      --database-url $$DATABASE_URL
+      --date-from $$target_date
+      --date-to $$target_date
+      || true;
+      sleep $$COLLECTOR_INTERVAL_SECONDS;
+      done"
+    restart: unless-stopped
+
+  collector-once:
+    build: .
+    container_name: fdc-collector-once
+    profiles: ["collector"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-financial_data}
+      KRX_AUTH_KEY: ${KRX_AUTH_KEY}
+      KRX_DAILY_LIMIT: ${KRX_DAILY_LIMIT:-10000}
+      DATE_FROM: ${DATE_FROM:-2026-01-01}
+      DATE_TO: ${DATE_TO:-2026-01-07}
+    command: >
+      sh -c "uv run python -m financial_data_collector.collect_krx_data
+      --database-url $$DATABASE_URL
+      --date-from $$DATE_FROM
+      --date-to $$DATE_TO"
+    volumes:
+      - ./data:/app/data
+    restart: "no"
+
+volumes:
+  pg_data:

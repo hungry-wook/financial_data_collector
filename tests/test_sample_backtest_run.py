@@ -1,7 +1,6 @@
 import json
 
 from financial_data_collector.export_service import ExportService
-from financial_data_collector.repository import Repository
 from financial_data_collector.sample_backtest_run import SampleRunConfig, run_backtest_sample
 
 
@@ -17,13 +16,12 @@ class FakeParquetWriter:
         path.write_text(json.dumps(manifest), encoding="utf-8")
 
 
-def test_sample_backtest_run_generates_dataset(tmp_path):
-    db_path = tmp_path / "sample.db"
+def test_sample_backtest_run_generates_dataset(tmp_path, repo):
     out_path = tmp_path / "out"
     result = run_backtest_sample(
-        SampleRunConfig(db_path=db_path.as_posix(), output_path=out_path.as_posix()),
+        SampleRunConfig(database_url=repo.database_url, output_path=out_path.as_posix()),
         export_service=ExportService(
-            repo=Repository(db_path.as_posix()),
+            repo=repo,
             writer=FakeParquetWriter(),
         ),
     )

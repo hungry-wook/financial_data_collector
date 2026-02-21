@@ -1,4 +1,4 @@
-"""Dashboard routes for KRX data collection status visualization."""
+﻿"""Dashboard routes for KRX data collection status visualization."""
 from pathlib import Path
 
 from fastapi import APIRouter, Query, Request
@@ -17,33 +17,24 @@ async def dashboard(request: Request):
 @router.get("/api/v1/dashboard/summary")
 async def get_summary(request: Request):
     repo = request.app.state.repo
-    with repo.connect() as conn:
-        instrument_count = conn.execute("SELECT COUNT(*) FROM instruments").fetchone()[0]
-
-        price_row = conn.execute(
-            "SELECT COUNT(*) as cnt, MIN(trade_date) as date_from, MAX(trade_date) as date_to FROM daily_market_data"
-        ).fetchone()
-
-        bench_row = conn.execute(
-            "SELECT COUNT(*) as cnt, MIN(trade_date) as date_from, MAX(trade_date) as date_to FROM benchmark_index_data"
-        ).fetchone()
-
-        trading_days = conn.execute(
-            "SELECT COUNT(DISTINCT trade_date) FROM daily_market_data"
-        ).fetchone()[0]
-
-        open_issues = conn.execute(
-            "SELECT COUNT(*) FROM data_quality_issues WHERE resolved_at IS NULL"
-        ).fetchone()[0]
+    instrument_count = repo.query("SELECT COUNT(*) AS cnt FROM instruments")[0]["cnt"]
+    price_row = repo.query(
+        "SELECT COUNT(*) AS cnt, MIN(trade_date) AS date_from, MAX(trade_date) AS date_to FROM daily_market_data"
+    )[0]
+    bench_row = repo.query(
+        "SELECT COUNT(*) AS cnt, MIN(trade_date) AS date_from, MAX(trade_date) AS date_to FROM benchmark_index_data"
+    )[0]
+    trading_days = repo.query("SELECT COUNT(DISTINCT trade_date) AS cnt FROM daily_market_data")[0]["cnt"]
+    open_issues = repo.query("SELECT COUNT(*) AS cnt FROM data_quality_issues WHERE resolved_at IS NULL")[0]["cnt"]
 
     return {
         "instrument_count": instrument_count,
-        "price_count": price_row[0],
-        "price_date_from": price_row[1],
-        "price_date_to": price_row[2],
-        "benchmark_count": bench_row[0],
-        "benchmark_date_from": bench_row[1],
-        "benchmark_date_to": bench_row[2],
+        "price_count": price_row["cnt"],
+        "price_date_from": price_row["date_from"],
+        "price_date_to": price_row["date_to"],
+        "benchmark_count": bench_row["cnt"],
+        "benchmark_date_from": bench_row["date_from"],
+        "benchmark_date_to": bench_row["date_to"],
         "trading_days": trading_days,
         "open_issues": open_issues,
     }
@@ -52,18 +43,17 @@ async def get_summary(request: Request):
 @router.get("/api/v1/dashboard/runs")
 async def get_runs(request: Request, limit: int = Query(20, ge=1, le=100)):
     repo = request.app.state.repo
-    with repo.connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT run_id, pipeline_name, source_name, window_start, window_end,
-                   status, started_at, finished_at, success_count, failure_count, warning_count
-            FROM collection_runs
-            ORDER BY started_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-    return [dict(r) for r in rows]
+    rows = repo.query(
+        """
+        SELECT run_id, pipeline_name, source_name, window_start, window_end,
+               status, started_at, finished_at, success_count, failure_count, warning_count
+        FROM collection_runs
+        ORDER BY started_at DESC
+        LIMIT %s
+        """,
+        (limit,),
+    )
+    return rows
 
 
 @router.get("/api/v1/dashboard/instruments")
@@ -89,22 +79,22 @@ async def get_instruments(
 
     if search:
         pattern = f"%{search}%"
-        where_clauses.append("(instrument_name LIKE ? OR external_code LIKE ?)")
+        where_clauses.append("(instrument_name ILIKE %s OR external_code ILIKE %s)")
         params.extend([pattern, pattern])
     if external_code:
-        where_clauses.append("external_code LIKE ?")
+        where_clauses.append("external_code ILIKE %s")
         params.append(f"%{external_code}%")
     if instrument_name:
-        where_clauses.append("instrument_name LIKE ?")
+        where_clauses.append("instrument_name ILIKE %s")
         params.append(f"%{instrument_name}%")
     if market_code:
-        where_clauses.append("market_code LIKE ?")
+        where_clauses.append("market_code ILIKE %s")
         params.append(f"%{market_code}%")
     if security_group:
-        where_clauses.append("security_group LIKE ?")
+        where_clauses.append("security_group ILIKE %s")
         params.append(f"%{security_group}%")
     if sector_name:
-        where_clauses.append("sector_name LIKE ?")
+        where_clauses.append("sector_name ILIKE %s")
         params.append(f"%{sector_name}%")
 
     status = listed_status.lower()
@@ -127,80 +117,91 @@ async def get_instruments(
     order_column = sort_columns.get(sort_by, "market_code")
     order_direction = "DESC" if sort_order.lower() == "desc" else "ASC"
 
-    with repo.connect() as conn:
-        total = conn.execute(
-            f"""
-            SELECT COUNT(*) FROM instruments
-            {where_sql}
-            """,
-            tuple(params),
-        ).fetchone()[0]
+    total = repo.query(
+        f"""
+        SELECT COUNT(*) AS cnt FROM instruments
+        {where_sql}
+        """,
+        tuple(params),
+    )[0]["cnt"]
 
-        rows = conn.execute(
-            f"""
-            SELECT instrument_id, external_code, market_code, instrument_name,
-                   listing_date, delisting_date, security_group, sector_name
-            FROM instruments
-            {where_sql}
-            ORDER BY {order_column} {order_direction}, external_code ASC
-            LIMIT ? OFFSET ?
-            """,
-            tuple(params + [size, offset]),
-        ).fetchall()
+    rows = repo.query(
+        f"""
+        SELECT external_code, market_code, instrument_name,
+               listing_date, delisting_date, security_group, sector_name
+        FROM instruments
+        {where_sql}
+        ORDER BY {order_column} {order_direction}, external_code ASC
+        LIMIT %s OFFSET %s
+        """,
+        tuple(params + [size, offset]),
+    )
 
-    return {"total": total, "page": page, "size": size, "items": [dict(r) for r in rows]}
+    return {"total": total, "page": page, "size": size, "items": rows}
 
 
 @router.get("/api/v1/dashboard/prices")
 async def get_prices(
     request: Request,
-    instrument_id: str = Query(""),
+    external_code: str = Query(""),
     date_from: str = Query(""),
     date_to: str = Query(""),
 ):
-    if not instrument_id:
+    if not external_code:
         return {"items": []}
+
     repo = request.app.state.repo
-    params = [instrument_id]
-    where_clauses = ["instrument_id = ?"]
+    instrument = repo.query(
+        """
+        SELECT instrument_id, external_code
+        FROM instruments
+        WHERE external_code = %s
+        ORDER BY (delisting_date IS NULL) DESC, listing_date DESC
+        LIMIT 1
+        """,
+        (external_code.strip(),),
+    )
+    if not instrument:
+        return {"items": []}
+
+    params = [instrument[0]["instrument_id"]]
+    where_clauses = ["instrument_id = %s"]
     if date_from:
-        where_clauses.append("trade_date >= ?")
+        where_clauses.append("trade_date >= %s")
         params.append(date_from)
     if date_to:
-        where_clauses.append("trade_date <= ?")
+        where_clauses.append("trade_date <= %s")
         params.append(date_to)
     where = " AND ".join(where_clauses)
-    with repo.connect() as conn:
-        rows = conn.execute(
-            f"""
-            SELECT trade_date, open, high, low, close, volume, turnover_value,
-                   change_rate, record_status
-            FROM daily_market_data
-            WHERE {where}
-            ORDER BY trade_date DESC
-            LIMIT 500
-            """,
-            tuple(params),
-        ).fetchall()
-    return {"items": [dict(r) for r in rows]}
+
+    rows = repo.query(
+        f"""
+        SELECT trade_date, open, high, low, close, volume, turnover_value,
+               change_rate, record_status
+        FROM daily_market_data
+        WHERE {where}
+        ORDER BY trade_date DESC
+        LIMIT 500
+        """,
+        tuple(params),
+    )
+    return {"items": rows}
 
 
 @router.get("/api/v1/dashboard/benchmarks")
 async def get_benchmarks(request: Request):
     repo = request.app.state.repo
-    with repo.connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT index_code,
-                   COUNT(*) as record_count,
-                   MIN(trade_date) as date_from,
-                   MAX(trade_date) as date_to
-            FROM benchmark_index_data
-            GROUP BY index_code
-            ORDER BY index_code
-            """,
-        ).fetchall()
-    return [dict(r) for r in rows]
+    return repo.query(
+        """
+        SELECT index_code,
+               COUNT(*) as record_count,
+               MIN(trade_date) as date_from,
+               MAX(trade_date) as date_to
+        FROM benchmark_index_data
+        GROUP BY index_code
+        ORDER BY index_code
+        """
+    )
 
 
 @router.get("/api/v1/dashboard/benchmark-series")
@@ -211,21 +212,19 @@ async def get_benchmark_series_list(
     if not index_code:
         return []
     repo = request.app.state.repo
-    with repo.connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT index_name,
-                   COUNT(*) as record_count,
-                   MIN(trade_date) as date_from,
-                   MAX(trade_date) as date_to
-            FROM benchmark_index_data
-            WHERE index_code = ?
-            GROUP BY index_name
-            ORDER BY index_name
-            """,
-            (index_code,),
-        ).fetchall()
-    return [dict(r) for r in rows]
+    return repo.query(
+        """
+        SELECT index_name,
+               COUNT(*) as record_count,
+               MIN(trade_date) as date_from,
+               MAX(trade_date) as date_to
+        FROM benchmark_index_data
+        WHERE index_code = %s
+        GROUP BY index_name
+        ORDER BY index_name
+        """,
+        (index_code,),
+    )
 
 
 @router.get("/api/v1/dashboard/benchmarks/{index_code}")
@@ -240,36 +239,38 @@ async def get_benchmark_series(
 ):
     if not series_name:
         return {"items": [], "total": 0}
+
     repo = request.app.state.repo
     params = [index_code, series_name]
-    where_clauses = ["index_code = ?", "index_name = ?"]
+    where_clauses = ["index_code = %s", "index_name = %s"]
     if date_from:
-        where_clauses.append("trade_date >= ?")
+        where_clauses.append("trade_date >= %s")
         params.append(date_from)
     if date_to:
-        where_clauses.append("trade_date <= ?")
+        where_clauses.append("trade_date <= %s")
         params.append(date_to)
     where = " AND ".join(where_clauses)
-    with repo.connect() as conn:
-        total = conn.execute(
-            f"""
-            SELECT COUNT(*) as cnt
-            FROM benchmark_index_data
-            WHERE {where}
-            """,
-            tuple(params),
-        ).fetchone()[0]
-        rows = conn.execute(
-            f"""
-            SELECT trade_date, open, high, low, close, volume, change_rate, record_status
-            FROM benchmark_index_data
-            WHERE {where}
-            ORDER BY trade_date DESC
-            LIMIT ? OFFSET ?
-            """,
-            tuple(params + [limit, offset]),
-        ).fetchall()
-    return {"items": [dict(r) for r in rows], "total": total}
+
+    total = repo.query(
+        f"""
+        SELECT COUNT(*) as cnt
+        FROM benchmark_index_data
+        WHERE {where}
+        """,
+        tuple(params),
+    )[0]["cnt"]
+
+    rows = repo.query(
+        f"""
+        SELECT trade_date, open, high, low, close, volume, change_rate, record_status
+        FROM benchmark_index_data
+        WHERE {where}
+        ORDER BY trade_date DESC
+        LIMIT %s OFFSET %s
+        """,
+        tuple(params + [limit, offset]),
+    )
+    return {"items": rows, "total": total}
 
 
 @router.get("/api/v1/dashboard/quality-issues")
@@ -280,22 +281,24 @@ async def get_quality_issues(
 ):
     repo = request.app.state.repo
     params: list = []
-    where_clauses = ["resolved_at IS NULL"]
+    where_clauses = ["q.resolved_at IS NULL"]
     if severity:
-        where_clauses.append("severity = ?")
+        where_clauses.append("q.severity = %s")
         params.append(severity)
     where = " AND ".join(where_clauses)
     params.append(limit)
-    with repo.connect() as conn:
-        rows = conn.execute(
-            f"""
-            SELECT issue_id, dataset_name, trade_date, instrument_id, index_code,
-                   issue_code, severity, issue_detail, detected_at
-            FROM data_quality_issues
-            WHERE {where}
-            ORDER BY detected_at DESC
-            LIMIT ?
-            """,
-            tuple(params),
-        ).fetchall()
-    return [dict(r) for r in rows]
+
+    rows = repo.query(
+        f"""
+        SELECT q.issue_id, q.dataset_name, q.trade_date,
+               i.external_code, q.index_code,
+               q.issue_code, q.severity, q.issue_detail, q.detected_at
+        FROM data_quality_issues q
+        LEFT JOIN instruments i ON i.instrument_id = q.instrument_id
+        WHERE {where}
+        ORDER BY q.detected_at DESC
+        LIMIT %s
+        """,
+        tuple(params),
+    )
+    return rows

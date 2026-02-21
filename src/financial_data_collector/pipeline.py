@@ -42,15 +42,14 @@ class Phase1Pipeline:
                 run_id=run_id,
             )
             v = self.validation.validate_range(market_code, str(date_from), str(date_to), run_id)
-            failures = v["issues"]
+            failures = v["errors"]
             self.runs.finish(
                 run_id,
                 success_count=i_count + d_count + b_count + c_count,
                 failure_count=failures,
-                warning_count=0,
+                warning_count=v["warnings"],
             )
             return {"run_id": run_id, "counts": {"instruments": i_count, "daily": d_count, "benchmark": b_count, "calendar": c_count}, "validation": v}
         except Exception:
             self.runs.fail(run_id)
             raise
-

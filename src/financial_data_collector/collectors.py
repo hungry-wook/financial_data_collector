@@ -1,7 +1,10 @@
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List
+from uuid import UUID, uuid5
 
 from .repository import Repository
+
+UUID_COERCE_NAMESPACE = UUID("7c76f04a-fca0-494d-96f8-6a68f1f21e84")
 
 
 def _to_iso(value) -> str:
@@ -21,6 +24,26 @@ def _normalize_date(value) -> str:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _coerce_uuid(value: str) -> str:
+    if value is None:
+        return value
+    raw = str(value).strip()
+    if not raw:
+        return raw
+    try:
+        return str(UUID(raw))
+    except ValueError:
+        return str(uuid5(UUID_COERCE_NAMESPACE, raw))
+
+
+def _resolve_existing_run_id(repo: Repository, run_id: str) -> str:
+    if not run_id:
+        return None
+    normalized = _coerce_uuid(run_id)
+    rows = repo.query("SELECT run_id FROM collection_runs WHERE run_id = %s", (normalized,))
+    return normalized if rows else None
 
 
 def _issue(
@@ -72,14 +95,14 @@ class InstrumentCollector:
                         severity="WARN",
                         source_name=source_name,
                         detected_at=now,
-                        instrument_id=r.get("instrument_id"),
+                        instrument_id=None,
                         issue_detail=f"listing_date={r.get('listing_date')}, delisting_date={r.get('delisting_date')}",
                     )
                 )
                 continue
             normalized.append(
                 {
-                    "instrument_id": r["instrument_id"],
+                    "instrument_id": _coerce_uuid(r["instrument_id"]),
                     "external_code": r["external_code"],
                     "market_code": r["market_code"].upper(),
                     "instrument_name": r.get("instrument_name", r["external_code"]),
@@ -110,10 +133,12 @@ class DailyMarketCollector:
 
     def collect(self, rows: List[Dict], source_name: str, run_id: str) -> int:
         now = _utc_now_iso()
+        persisted_run_id = _resolve_existing_run_id(self.repo, run_id)
         normalized = []
         issues = []
         for r in rows:
             instrument_id = r.get("instrument_id")
+            normalized_instrument_id = _coerce_uuid(instrument_id) if instrument_id else None
             try:
                 trade_date = _normalize_date(r.get("trade_date"))
                 open_price = float(r["open"])
@@ -137,7 +162,9 @@ class DailyMarketCollector:
 
                 normalized.append(
                     {
-                        "instrument_id": instrument_id,
+                        "instrument_id": normalized_instrument_id,
+                        "external_code": r.get("external_code"),
+                        "market_code": str(r.get("market_code", "")).upper() if r.get("market_code") else None,
                         "trade_date": trade_date,
                         "open": open_price,
                         "high": high_price,
@@ -154,7 +181,7 @@ class DailyMarketCollector:
                         "record_status": r.get("record_status", "VALID"),
                         "source_name": source_name,
                         "collected_at": now,
-                        "run_id": run_id,
+                        "run_id": persisted_run_id,
                     }
                 )
             except (KeyError, TypeError, ValueError) as exc:
@@ -165,13 +192,48 @@ class DailyMarketCollector:
                         severity="ERROR",
                         source_name=source_name,
                         detected_at=now,
-                        run_id=run_id,
+                        run_id=persisted_run_id,
                         trade_date=_to_iso(r.get("trade_date")),
-                        instrument_id=instrument_id,
+                        instrument_id=normalized_instrument_id,
                         issue_detail=str(exc),
                     )
                 )
         if normalized:
+            # Backfill minimal instrument master rows when daily rows arrive first.
+            instrument_ids = {r["instrument_id"] for r in normalized if r.get("instrument_id")}
+            missing_rows = []
+            for iid in instrument_ids:
+                exists = self.repo.query("SELECT 1 AS ok FROM instruments WHERE instrument_id = %s LIMIT 1", (iid,))
+                if exists:
+                    continue
+                sample = next((r for r in normalized if r.get("instrument_id") == iid), None)
+                if not sample:
+                    continue
+                external_code = str(sample.get("external_code") or iid)[:20]
+                market_code = str(sample.get("market_code") or "UNKNOWN").upper()[:20]
+                listing_date = sample.get("trade_date")
+                missing_rows.append(
+                    {
+                        "instrument_id": iid,
+                        "external_code": external_code,
+                        "market_code": market_code,
+                        "instrument_name": external_code,
+                        "instrument_name_abbr": external_code,
+                        "instrument_name_eng": external_code,
+                        "listing_date": listing_date,
+                        "delisting_date": None,
+                        "listed_shares": None,
+                        "security_group": None,
+                        "sector_name": None,
+                        "stock_type": None,
+                        "par_value": None,
+                        "source_name": source_name,
+                        "collected_at": now,
+                        "updated_at": now,
+                    }
+                )
+            if missing_rows:
+                self.repo.upsert_instruments(missing_rows)
             self.repo.upsert_daily_market(normalized)
         if issues:
             self.repo.insert_issues(issues)
@@ -185,6 +247,7 @@ class BenchmarkCollector:
 
     def collect(self, rows: List[Dict], source_name: str, run_id: str) -> int:
         now = _utc_now_iso()
+        persisted_run_id = _resolve_existing_run_id(self.repo, run_id)
         normalized = []
         issues = []
         dates_by_series: Dict[tuple, set] = {}
@@ -198,7 +261,7 @@ class BenchmarkCollector:
                         severity="ERROR",
                         source_name=source_name,
                         detected_at=now,
-                        run_id=run_id,
+                        run_id=persisted_run_id,
                         trade_date=_to_iso(r.get("trade_date")),
                         index_code=raw_index_code or None,
                         issue_detail=f"index_code={raw_index_code}",
@@ -242,7 +305,7 @@ class BenchmarkCollector:
                         severity="ERROR",
                         source_name=source_name,
                         detected_at=now,
-                        run_id=run_id,
+                        run_id=persisted_run_id,
                         trade_date=_to_iso(r.get("trade_date")),
                         index_code=index_code,
                         issue_detail=f"{index_name}: {exc}",
@@ -264,7 +327,7 @@ class BenchmarkCollector:
                         severity="WARN",
                         source_name=source_name,
                         detected_at=now,
-                        run_id=run_id,
+                        run_id=persisted_run_id,
                         trade_date=trade_date,
                         index_code=index_code,
                         issue_detail=f"index_name={index_name}",
@@ -292,7 +355,7 @@ class BenchmarkCollector:
                     "record_status": status,
                     "source_name": source_name,
                     "collected_at": now,
-                    "run_id": run_id,
+                    "run_id": persisted_run_id,
                 }
             )
             dates_by_series.setdefault((index_code, index_name), set()).add(date.fromisoformat(trade_date))
@@ -312,7 +375,7 @@ class BenchmarkCollector:
                             severity="WARN",
                             source_name=source_name,
                             detected_at=now,
-                            run_id=run_id,
+                            run_id=persisted_run_id,
                             trade_date=current.isoformat(),
                             index_code=index_code,
                             issue_detail=f"missing benchmark day for {index_code}/{index_name}",

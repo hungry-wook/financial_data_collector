@@ -1,88 +1,117 @@
-# financial_data_collector
+﻿# financial_data_collector
 
-금융 시계열 데이터 수집/정규화/검증 문서 저장소입니다.
+湲덉쑖 ?쒓퀎???곗씠???섏쭛/?뺢퇋??寃利?臾몄꽌 ??μ냼?낅땲??
 
-## 개발 환경(uv)
-1. uv 설치 확인:
+## 媛쒕컻 ?섍꼍(uv)
+1. uv ?ㅼ튂 ?뺤씤:
 - `uv --version`
-2. 가상환경 + 의존성 설치:
+2. 媛?곹솚寃?+ ?섏〈???ㅼ튂:
 - `uv sync --extra dev --extra parquet`
-3. 전체 테스트 실행:
+3. ?꾩껜 ?뚯뒪???ㅽ뻾:
 - `uv run pytest -q`
 
-## 문서 구조
-- `docs/README.md`: 문서 전체 내비게이션
-- `docs/ARCHITECTURE.md`: 설계 원칙과 Phase 로드맵
-- `docs/API_COLLECTION_PLAN.md`: 데이터 소스-스키마 매핑 계획
-- `docs/KRX_API_COLLECTION_SPEC.md`: KRX 수집 API 명세
-- `docs/IMPLEMENTATION_GUIDE.md`: Phase별 구현 지시서
-- `docs/PHASE1_INTERFACE_DESIGN.md`: Phase 1 + 조회 인터페이스 설계안
-- `docs/BULK_EXPORT_API_SPEC.md`: 기간 벌크 추출 API 규격
-- `docs/SCHEMA.md`: 스키마 계약 문서
-- `docs/SCOPE_REVIEW.md`: 범위 및 적합성 점검 기록
-- `sql/platform_schema.sql`: 실행 DDL(Phase 1~4)
+## 臾몄꽌 援ъ“
+- `docs/README.md`: 臾몄꽌 ?꾩껜 ?대퉬寃뚯씠??- `docs/ARCHITECTURE.md`: ?ㅺ퀎 ?먯튃怨?Phase 濡쒕뱶留?- `docs/API_COLLECTION_PLAN.md`: ?곗씠???뚯뒪-?ㅽ궎留?留ㅽ븨 怨꾪쉷
+- `docs/KRX_API_COLLECTION_SPEC.md`: KRX ?섏쭛 API 紐낆꽭
+- `docs/IMPLEMENTATION_GUIDE.md`: Phase蹂?援ы쁽 吏?쒖꽌
+- `docs/PHASE1_INTERFACE_DESIGN.md`: Phase 1 + 議고쉶 ?명꽣?섏씠???ㅺ퀎??- `docs/BULK_EXPORT_API_SPEC.md`: 湲곌컙 踰뚰겕 異붿텧 API 洹쒓꺽
+- `docs/SCHEMA.md`: ?ㅽ궎留?怨꾩빟 臾몄꽌
+- `docs/SCOPE_REVIEW.md`: 踰붿쐞 諛??곹빀???먭? 湲곕줉
+- `sql/platform_schema.sql`: ?ㅽ뻾 DDL(Phase 1~4)
 
-## 권장 읽기 순서
+## 沅뚯옣 ?쎄린 ?쒖꽌
 1. `docs/ARCHITECTURE.md`
 2. `docs/SCHEMA.md`
 3. `docs/API_COLLECTION_PLAN.md`
 4. `docs/IMPLEMENTATION_GUIDE.md`
 
-## 구현 시작점
-- DB 생성: `sql/platform_schema.sql`
-- 구현 착수: `docs/IMPLEMENTATION_GUIDE.md`의 Phase 1
+## 援ы쁽 ?쒖옉??- DB ?앹꽦: `sql/platform_schema.sql`
+- 援ы쁽 李⑹닔: `docs/IMPLEMENTATION_GUIDE.md`??Phase 1
 
-## KRX 실연동 테스트 준비
-1. `.env.example`을 참고해 `.env` 작성
-2. 필수 값 입력:
+## KRX ?ㅼ뿰???뚯뒪??以鍮?1. `.env.example`??李멸퀬??`.env` ?묒꽦
+2. ?꾩닔 媛??낅젰:
 - `KRX_AUTH_KEY`
 - `KRX_BASE_URL`
 - `KRX_API_PATH_INSTRUMENTS`
 - `KRX_API_PATH_DAILY_MARKET`
 - `KRX_API_PATH_INDEX_DAILY`
-3. 사전점검 테스트:
+3. ?ъ쟾?먭? ?뚯뒪??
 - `uv run pytest -q tests/test_preflight.py`
-4. 실연동 스모크 테스트:
+4. ?ㅼ뿰???ㅻえ???뚯뒪??
 - `uv run pytest -q -m integration`
 
-## PostgreSQL 스키마 계약 테스트
-1. PostgreSQL 연결 문자열 준비(예: `postgresql://user:pass@localhost:5432/postgres`)
-2. 환경변수 설정:
-- `TEST_POSTGRES_DSN=<연결문자열>`
-3. 실행:
+## PostgreSQL ?ㅽ궎留?怨꾩빟 ?뚯뒪??1. PostgreSQL ?곌껐 臾몄옄??以鍮??? `postgresql://user:pass@localhost:5432/postgres`)
+2. ?섍꼍蹂???ㅼ젙:
+- `TEST_POSTGRES_DSN=<?곌껐臾몄옄??`
+3. ?ㅽ뻾:
 - `uv run pytest -q -m postgres tests/test_schema_contract_postgres.py`
 
-임시 컨테이너로 한 번에 실행(Windows PowerShell):
+?꾩떆 而⑦뀒?대꼫濡???踰덉뿉 ?ㅽ뻾(Windows PowerShell):
 - `.\scripts\run_postgres_tests.ps1`
 
-pytest만으로 임시 컨테이너 자동 실행:
-1. `.env` 설정
+pytest留뚯쑝濡??꾩떆 而⑦뀒?대꼫 ?먮룞 ?ㅽ뻾:
+1. `.env` ?ㅼ젙
 - `TEST_POSTGRES_USE_TEMP_CONTAINER=1`
 - `TEST_POSTGRES_DOCKER_PORT=5431`
-2. 실행
+2. ?ㅽ뻾
 - `uv run pytest -q -m postgres -rs`
 
-## 1Y KOSDAQ 내보내기 성능 테스트(옵션)
-1. 실행 플래그 설정:
+## 1Y KOSDAQ ?대낫?닿린 ?깅뒫 ?뚯뒪???듭뀡)
+1. ?ㅽ뻾 ?뚮옒洹??ㅼ젙:
 - `RUN_PERF_TESTS=1`
-2. 허용 시간(초) 설정(옵션):
+2. ?덉슜 ?쒓컙(珥? ?ㅼ젙(?듭뀡):
 - `PERF_MAX_EXPORT_SECONDS=10`
-3. 실행:
+3. ?ㅽ뻾:
 - `uv run pytest -q -m performance tests/test_export_performance.py`
 
-## 백테스트 샘플 데이터셋 생성
-코드 진입점:
+## 諛깊뀒?ㅽ듃 ?섑뵆 ?곗씠?곗뀑 ?앹꽦
+肄붾뱶 吏꾩엯??
 - `src/financial_data_collector/sample_backtest_run.py`
 
-## uv lock 파일 생성
-현재 세션(샌드박스)에서는 Python 실행 파일 접근 제한으로 `uv lock` 생성이 실패할 수 있습니다.
-로컬 일반 터미널에서는 아래 명령으로 lock 파일을 생성할 수 있습니다.
+## uv lock ?뚯씪 ?앹꽦
+?꾩옱 ?몄뀡(?뚮뱶諛뺤뒪)?먯꽌??Python ?ㅽ뻾 ?뚯씪 ?묎렐 ?쒗븳?쇰줈 `uv lock` ?앹꽦???ㅽ뙣?????덉뒿?덈떎.
+濡쒖뺄 ?쇰컲 ?곕??먯뿉?쒕뒗 ?꾨옒 紐낅졊?쇰줈 lock ?뚯씪???앹꽦?????덉뒿?덈떎.
 - `uv lock`
 
-## KRX 데이터 수집 스크립트
-- 실행(기본: KOSDAQ + KOSPI 동시 수집): `uv run collect-krx-data --date-from 2026-01-02 --date-to 2026-01-10`
-- 모듈 실행(기본: KOSDAQ + KOSPI 동시 수집): `uv run python -m financial_data_collector.collect_krx_data --date-from 2026-01-02 --date-to 2026-01-10`
-- 옵션:
-- `--db-path data/financial_data.db`
-- 단일 시장만 수집: `--market-code KOSDAQ` (필요 시 `--index-code KOSDAQ`)
-- 다중 시장 지정: `--market-codes KOSDAQ,KOSPI`
+## KRX ?곗씠???섏쭛 ?ㅽ겕由쏀듃
+- ?ㅽ뻾(湲곕낯: KOSDAQ + KOSPI ?숈떆 ?섏쭛): `uv run collect-krx-data --date-from 2026-01-02 --date-to 2026-01-10`
+- 紐⑤뱢 ?ㅽ뻾(湲곕낯: KOSDAQ + KOSPI ?숈떆 ?섏쭛): `uv run python -m financial_data_collector.collect_krx_data --date-from 2026-01-02 --date-to 2026-01-10`
+- ?듭뀡:
+- `--database-url postgresql://user:pass@localhost:5432/postgres`
+- ?⑥씪 ?쒖옣留??섏쭛: `--market-code KOSDAQ` (?꾩슂 ??`--index-code KOSDAQ`)
+- ?ㅼ쨷 ?쒖옣 吏?? `--market-codes KOSDAQ,KOSPI`
+
+
+## Docker Compose (PostgreSQL + API + Daily Collector)
+
+1. `.env` 준비
+- 최소 필요값: `KRX_AUTH_KEY`
+- 필요 시 PostgreSQL 값 수정: `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_PORT`
+
+2. 실행
+```bash
+docker compose up -d --build
+```
+
+3. 확인
+```bash
+docker compose ps
+curl http://localhost:8000/health
+```
+
+4. Daily 수집기
+- `collector` 서비스가 상시 실행되며 기본값으로 UTC 기준 전일 데이터를 24시간마다 수집합니다.
+- 조정 변수: `COLLECTOR_INTERVAL_SECONDS`, `COLLECTOR_DATE_OFFSET_DAYS`
+
+5. 수집(기간 지정 1회 실행)
+```bash
+docker compose run --rm \
+  -e DATE_FROM=2026-02-14 \
+  -e DATE_TO=2026-02-21 \
+  --profile collector collector-once
+```
+
+6. 종료
+```bash
+docker compose down
+```

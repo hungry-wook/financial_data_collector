@@ -1,9 +1,11 @@
 import argparse
 import json
 import logging
+import os
 import re
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional
+from uuid import UUID, uuid5
 
 from .calendar_builder import TradingCalendarBuilder
 from .collectors import BenchmarkCollector, DailyMarketCollector, InstrumentCollector
@@ -14,6 +16,7 @@ from .settings import KRXSettings, load_dotenv
 from .validation import ValidationJob
 
 logger = logging.getLogger(__name__)
+INSTRUMENT_UUID_NAMESPACE = UUID("0d9a6af7-e603-4c9d-8ca6-e7f6af20d9e0")
 
 
 def _parse_date(value: str) -> date:
@@ -126,6 +129,10 @@ def _extract_rows(payload: Any) -> List[Dict[str, Any]]:
     return []
 
 
+def _instrument_uuid(market_code: str, external_code: str) -> str:
+    return str(uuid5(INSTRUMENT_UUID_NAMESPACE, f"{market_code.upper()}:{external_code.upper()}"))
+
+
 def _normalize_instruments(rows: List[Dict[str, Any]], market_code: str) -> List[Dict[str, Any]]:
     normalized: List[Dict[str, Any]] = []
     for row in rows:
@@ -160,7 +167,7 @@ def _normalize_instruments(rows: List[Dict[str, Any]], market_code: str) -> List
 
         normalized.append(
             {
-                "instrument_id": instrument_code,
+                "instrument_id": _instrument_uuid(market_code, instrument_code),
                 "external_code": instrument_code,
                 "market_code": market_code,
                 "instrument_name": instrument_name,
@@ -178,7 +185,7 @@ def _normalize_instruments(rows: List[Dict[str, Any]], market_code: str) -> List
     return normalized
 
 
-def _normalize_daily_market(rows: List[Dict[str, Any]], trade_date: date) -> List[Dict[str, Any]]:
+def _normalize_daily_market(rows: List[Dict[str, Any]], market_code: str, trade_date: date) -> List[Dict[str, Any]]:
     normalized: List[Dict[str, Any]] = []
     for row in rows:
         instrument_id_raw = _first_not_none(
@@ -193,8 +200,8 @@ def _normalize_daily_market(rows: List[Dict[str, Any]], trade_date: date) -> Lis
                 "symbol",
             ],
         )
-        instrument_id = _normalize_instrument_code(instrument_id_raw)
-        if not instrument_id:
+        external_code = _normalize_instrument_code(instrument_id_raw)
+        if not external_code:
             continue
 
         open_price = _parse_number(_first_not_none(row, ["open", "TDD_OPNPRC", "tdd_opnprc", "stck_oprc"]))
@@ -208,7 +215,14 @@ def _normalize_daily_market(rows: List[Dict[str, Any]], trade_date: date) -> Lis
             continue
 
         is_trade_halted = False
-        if int(volume or 0) == 0 and close_price != 0:
+        if close_price != 0 and open_price == 0 and high_price == 0 and low_price == 0:
+            is_trade_halted = True
+            open_price = close_price
+            high_price = close_price
+            low_price = close_price
+        elif int(volume or 0) == 0 and open_price == high_price == low_price == close_price:
+            is_trade_halted = True
+        elif int(volume or 0) == 0 and close_price != 0:
             if high_price == 0 or low_price == 0:
                 is_trade_halted = True
                 if open_price == 0:
@@ -224,7 +238,9 @@ def _normalize_daily_market(rows: List[Dict[str, Any]], trade_date: date) -> Lis
 
         normalized.append(
             {
-                "instrument_id": str(instrument_id),
+                "instrument_id": _instrument_uuid(market_code, external_code),
+                "external_code": external_code,
+                "market_code": market_code.upper(),
                 "trade_date": trade_date.isoformat(),
                 "open": open_price,
                 "high": high_price,
@@ -290,7 +306,7 @@ def _normalize_benchmark(rows: List[Dict[str, Any]], index_code: str, trade_date
 
 
 def run_collection(
-    db_path: str,
+    database_url: str,
     market_code: str,
     index_code: str,
     date_from: date,
@@ -301,7 +317,7 @@ def run_collection(
     settings = KRXSettings.from_env()
     settings.validate()
 
-    repo = Repository(db_path)
+    repo = Repository(database_url)
     repo.init_schema()
 
     client = KRXClient(KRXClientConfig.from_settings(settings))
@@ -344,7 +360,7 @@ def run_collection(
             extracted_daily = _extract_rows(daily_payload)
             extracted_benchmark = _extract_rows(benchmark_payload)
 
-            normalized_daily = _normalize_daily_market(extracted_daily, trade_day)
+            normalized_daily = _normalize_daily_market(extracted_daily, market_code, trade_day)
             normalized_benchmark = _normalize_benchmark(extracted_benchmark, index_code, trade_day)
 
             daily_day_count = daily_collector.collect(normalized_daily, source_name, run_id)
@@ -371,8 +387,8 @@ def run_collection(
         run_manager.finish(
             run_id=run_id,
             success_count=instrument_count + daily_count + benchmark_count + calendar_count,
-            failure_count=validation["issues"],
-            warning_count=0,
+            failure_count=validation["errors"],
+            warning_count=validation["warnings"],
         )
     except Exception:
         run_manager.fail(run_id)
@@ -389,7 +405,7 @@ def run_collection(
 
 
 def run_collection_multi(
-    db_path: str,
+    database_url: str,
     market_codes: List[str],
     index_codes: Optional[List[str]],
     date_from: date,
@@ -415,7 +431,7 @@ def run_collection_multi(
     for market_code, index_code in zip(markets, indices):
         results.append(
             run_collection(
-                db_path=db_path,
+                database_url=database_url,
                 market_code=market_code,
                 index_code=index_code,
                 date_from=date_from,
@@ -428,8 +444,8 @@ def run_collection_multi(
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Collect KRX market data and store in local DB.")
-    parser.add_argument("--db-path", default="data/financial_data.db")
+    parser = argparse.ArgumentParser(description="Collect KRX market data and store in PostgreSQL.")
+    parser.add_argument("--database-url", default=os.getenv("DATABASE_URL", ""))
     parser.add_argument("--market-code", default="", help="Single market code override (e.g. KOSDAQ)")
     parser.add_argument("--index-code", default="", help="Single index code override (defaults to market code)")
     parser.add_argument("--market-codes", default="KOSDAQ,KOSPI", help="Comma-separated market codes (default: KOSDAQ,KOSPI)")
@@ -459,11 +475,13 @@ def main() -> None:
     date_to = _parse_date(args.date_to)
     if date_from > date_to:
         raise ValueError("date-from must be <= date-to")
+    if not args.database_url:
+        raise ValueError("--database-url or DATABASE_URL is required")
     if args.market_code.strip():
         market_code = args.market_code.strip().upper()
         index_code = (args.index_code.strip() or market_code).upper()
         result = run_collection(
-            db_path=args.db_path,
+            database_url=args.database_url,
             market_code=market_code,
             index_code=index_code,
             date_from=date_from,
@@ -472,7 +490,7 @@ def main() -> None:
         )
     else:
         result = run_collection_multi(
-            db_path=args.db_path,
+            database_url=args.database_url,
             market_codes=args.market_codes.split(","),
             index_codes=args.index_codes.split(",") if args.index_codes.strip() else None,
             date_from=date_from,

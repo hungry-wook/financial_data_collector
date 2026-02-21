@@ -1,4 +1,4 @@
-import os
+﻿import os
 import shutil
 import subprocess
 import time
@@ -30,18 +30,6 @@ def _is_localhost_dsn_with_port(dsn: str, port: str) -> bool:
     host = (parsed.hostname or "").strip().lower()
     parsed_port = parsed.port
     return host in {"127.0.0.1", "localhost"} and str(parsed_port or "") == str(port).strip()
-
-
-@pytest.fixture
-def db_path(tmp_path: Path) -> Path:
-    return tmp_path / "test.db"
-
-
-@pytest.fixture
-def repo(db_path: Path) -> Repository:
-    r = Repository(db_path.as_posix())
-    r.init_schema()
-    return r
 
 
 @pytest.fixture
@@ -183,6 +171,14 @@ def pg_conn(pg_test_dsn: str, pg_connect_timeout_sec: int, pg_preflight):
             with conn.cursor() as cur:
                 cur.execute(f'SET search_path TO "{schema_name}"')
                 cur.execute(Path("sql/platform_schema.sql").read_text(encoding="utf-8-sig"))
+                cur.execute("ALTER TABLE collection_runs DROP CONSTRAINT IF EXISTS collection_runs_status_check")
+                cur.execute(
+                    """
+                    ALTER TABLE collection_runs
+                    ADD CONSTRAINT collection_runs_status_check
+                    CHECK (status IN ('RUNNING', 'SUCCESS', 'PARTIAL', 'FAILED'))
+                    """
+                )
             conn.commit()
             yield conn
     finally:
@@ -192,3 +188,23 @@ def pg_conn(pg_test_dsn: str, pg_connect_timeout_sec: int, pg_preflight):
                     cur.execute(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE')
         except Exception:
             pass
+
+
+@pytest.fixture
+def repo(pg_test_dsn: str, pg_connect_timeout_sec: int, pg_preflight):
+    psycopg = pytest.importorskip("psycopg")
+    schema_name = f"repo_{uuid4().hex}"
+
+    with psycopg.connect(pg_test_dsn, connect_timeout=pg_connect_timeout_sec, autocommit=True) as admin_conn:
+        with admin_conn.cursor() as cur:
+            cur.execute(f'CREATE SCHEMA "{schema_name}"')
+
+    repository = Repository(pg_test_dsn, schema=schema_name)
+    repository.init_schema()
+
+    try:
+        yield repository
+    finally:
+        with psycopg.connect(pg_test_dsn, connect_timeout=pg_connect_timeout_sec, autocommit=True) as admin_conn:
+            with admin_conn.cursor() as cur:
+                cur.execute(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE')

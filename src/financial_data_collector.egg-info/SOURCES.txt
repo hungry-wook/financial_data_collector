@@ -5,6 +5,7 @@ src/financial_data_collector/api.py
 src/financial_data_collector/calendar_builder.py
 src/financial_data_collector/collect_krx_data.py
 src/financial_data_collector/collectors.py
+src/financial_data_collector/dashboard_routes.py
 src/financial_data_collector/export_service.py
 src/financial_data_collector/krx_client.py
 src/financial_data_collector/models.py

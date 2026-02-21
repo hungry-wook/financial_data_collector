@@ -1,303 +1,49 @@
-import sqlite3
-from contextlib import contextmanager
-from datetime import datetime, timezone
+﻿from contextlib import contextmanager
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
+from uuid import UUID
+
+import psycopg
+from psycopg import sql
+from psycopg.rows import dict_row
 
 
 class Repository:
-    def __init__(self, db_path: str):
-        self.db_path = db_path
+    def __init__(self, database_url: str, schema: Optional[str] = None):
+        self.database_url = database_url
+        self.schema = schema
 
     @contextmanager
     def connect(self):
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
+        conn = psycopg.connect(self.database_url, row_factory=dict_row)
         try:
+            if self.schema:
+                conn.execute(sql.SQL("SET search_path TO {}").format(sql.Identifier(self.schema)))
             yield conn
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
     def init_schema(self) -> None:
+        schema_path = Path(__file__).resolve().parents[2] / "sql" / "platform_schema.sql"
+        ddl = schema_path.read_text(encoding="utf-8-sig")
         with self.connect() as conn:
-            conn.executescript(
+            exists = conn.execute("SELECT to_regclass('instruments') AS table_name").fetchone()
+            if not exists or not exists.get("table_name"):
+                conn.execute(ddl)
+            conn.execute("ALTER TABLE collection_runs DROP CONSTRAINT IF EXISTS collection_runs_status_check")
+            conn.execute(
                 """
-                PRAGMA foreign_keys = ON;
-
-                CREATE TABLE IF NOT EXISTS instruments (
-                    instrument_id TEXT PRIMARY KEY,
-                    external_code TEXT NOT NULL,
-                    market_code TEXT NOT NULL,
-                    instrument_name TEXT NOT NULL,
-                    instrument_name_abbr TEXT NULL,
-                    instrument_name_eng TEXT NULL,
-                    listing_date TEXT NOT NULL,
-                    delisting_date TEXT NULL,
-                    listed_shares INTEGER NULL,
-                    security_group TEXT NULL,
-                    sector_name TEXT NULL,
-                    stock_type TEXT NULL,
-                    par_value REAL NULL,
-                    source_name TEXT NOT NULL,
-                    collected_at TEXT NOT NULL,
-                    updated_at TEXT NULL,
-                    UNIQUE (market_code, external_code),
-                    CHECK (delisting_date IS NULL OR delisting_date >= listing_date)
-                );
-
-                CREATE TABLE IF NOT EXISTS collection_runs (
-                    run_id TEXT PRIMARY KEY,
-                    pipeline_name TEXT NOT NULL,
-                    source_name TEXT NOT NULL,
-                    window_start TEXT NOT NULL,
-                    window_end TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    started_at TEXT NOT NULL,
-                    finished_at TEXT NULL,
-                    success_count INTEGER NOT NULL DEFAULT 0,
-                    failure_count INTEGER NOT NULL DEFAULT 0,
-                    warning_count INTEGER NOT NULL DEFAULT 0,
-                    metadata TEXT NULL,
-                    CHECK (status IN ('RUNNING', 'SUCCESS', 'PARTIAL', 'FAILED')),
-                    CHECK (window_end >= window_start)
-                );
-
-                CREATE TABLE IF NOT EXISTS trading_calendar (
-                    market_code TEXT NOT NULL,
-                    trade_date TEXT NOT NULL,
-                    is_open INTEGER NOT NULL,
-                    holiday_name TEXT NULL,
-                    source_name TEXT NOT NULL,
-                    collected_at TEXT NOT NULL,
-                    run_id TEXT NULL,
-                    PRIMARY KEY (market_code, trade_date),
-                    FOREIGN KEY (run_id) REFERENCES collection_runs(run_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS daily_market_data (
-                    instrument_id TEXT NOT NULL,
-                    trade_date TEXT NOT NULL,
-                    open REAL NOT NULL,
-                    high REAL NOT NULL,
-                    low REAL NOT NULL,
-                    close REAL NOT NULL,
-                    volume INTEGER NOT NULL,
-                    turnover_value REAL NULL,
-                    market_value REAL NULL,
-                    price_change REAL NULL,
-                    change_rate REAL NULL,
-                    listed_shares INTEGER NULL,
-                    is_trade_halted INTEGER NOT NULL DEFAULT 0,
-                    is_under_supervision INTEGER NOT NULL DEFAULT 0,
-                    record_status TEXT NOT NULL DEFAULT 'VALID',
-                    source_name TEXT NOT NULL,
-                    collected_at TEXT NOT NULL,
-                    run_id TEXT NULL,
-                    PRIMARY KEY (instrument_id, trade_date),
-                    CHECK (high >= MAX(open, close, low)),
-                    CHECK (low <= MIN(open, close, high)),
-                    CHECK (volume >= 0),
-                    CHECK (turnover_value IS NULL OR turnover_value >= 0),
-                    CHECK (market_value IS NULL OR market_value >= 0),
-                    CHECK (record_status IN ('VALID', 'INVALID', 'MISSING')),
-                    FOREIGN KEY (instrument_id) REFERENCES instruments(instrument_id),
-                    FOREIGN KEY (run_id) REFERENCES collection_runs(run_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS benchmark_index_data (
-                    index_code TEXT NOT NULL,
-                    index_name TEXT NOT NULL,
-                    trade_date TEXT NOT NULL,
-                    open REAL NULL,
-                    high REAL NULL,
-                    low REAL NULL,
-                    close REAL NULL,
-                    raw_open TEXT NULL,
-                    raw_high TEXT NULL,
-                    raw_low TEXT NULL,
-                    raw_close TEXT NULL,
-                    volume INTEGER NULL,
-                    turnover_value REAL NULL,
-                    market_cap REAL NULL,
-                    price_change REAL NULL,
-                    change_rate REAL NULL,
-                    record_status TEXT NOT NULL DEFAULT 'VALID',
-                    source_name TEXT NOT NULL,
-                    collected_at TEXT NOT NULL,
-                    run_id TEXT NULL,
-                    PRIMARY KEY (index_code, index_name, trade_date),
-                    CHECK (
-                        open IS NULL OR high IS NULL OR low IS NULL OR close IS NULL
-                        OR high >= MAX(open, close, low)
-                    ),
-                    CHECK (
-                        open IS NULL OR high IS NULL OR low IS NULL OR close IS NULL
-                        OR low <= MIN(open, close, high)
-                    ),
-                    CHECK (volume IS NULL OR volume >= 0),
-                    CHECK (record_status IN ('VALID', 'PARTIAL', 'INVALID')),
-                    FOREIGN KEY (run_id) REFERENCES collection_runs(run_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS data_quality_issues (
-                    issue_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    dataset_name TEXT NOT NULL,
-                    trade_date TEXT NULL,
-                    instrument_id TEXT NULL,
-                    index_code TEXT NULL,
-                    issue_code TEXT NOT NULL,
-                    severity TEXT NOT NULL,
-                    issue_detail TEXT NULL,
-                    source_name TEXT NULL,
-                    detected_at TEXT NOT NULL,
-                    run_id TEXT NULL,
-                    resolved_at TEXT NULL,
-                    CHECK (severity IN ('INFO', 'WARN', 'ERROR')),
-                    FOREIGN KEY (instrument_id) REFERENCES instruments(instrument_id),
-                    FOREIGN KEY (run_id) REFERENCES collection_runs(run_id)
-                );
-
-                DROP VIEW IF EXISTS core_market_dataset_v1;
-                CREATE VIEW core_market_dataset_v1 AS
-                SELECT d.instrument_id,
-                    i.external_code,
-                    i.market_code,
-                    i.instrument_name,
-                    i.listing_date,
-                    i.delisting_date,
-                    d.trade_date,
-                    d.open,
-                    d.high,
-                    d.low,
-                    d.close,
-                    d.volume,
-                    d.turnover_value,
-                    d.market_value,
-                    d.is_trade_halted,
-                    d.is_under_supervision,
-                    d.record_status,
-                    d.source_name,
-                    d.collected_at
-                FROM daily_market_data d
-                JOIN instruments i ON i.instrument_id = d.instrument_id;
-
-                DROP VIEW IF EXISTS benchmark_dataset_v1;
-                CREATE VIEW benchmark_dataset_v1 AS
-                SELECT index_code, index_name, trade_date, open, high, low, close, volume,
-                       turnover_value, market_cap, price_change, change_rate, record_status,
-                       source_name, collected_at
-                FROM benchmark_index_data;
-
-                CREATE VIEW IF NOT EXISTS trading_calendar_v1 AS
-                SELECT market_code, trade_date, is_open, holiday_name, source_name, collected_at
-                FROM trading_calendar;
-
-                CREATE INDEX IF NOT EXISTS idx_benchmark_code_date ON benchmark_index_data(index_code, trade_date);
-                CREATE INDEX IF NOT EXISTS idx_benchmark_series_date ON benchmark_index_data(index_code, index_name, trade_date DESC);
-                CREATE INDEX IF NOT EXISTS idx_benchmark_status_date ON benchmark_index_data(record_status, trade_date);
+                ALTER TABLE collection_runs
+                ADD CONSTRAINT collection_runs_status_check
+                CHECK (status IN ('RUNNING', 'SUCCESS', 'PARTIAL', 'FAILED'))
                 """
             )
-            self._migrate_benchmark_table(conn)
-
-    @staticmethod
-    def _table_columns(conn: sqlite3.Connection, table_name: str) -> List[str]:
-        rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-        return [str(row["name"]) for row in rows]
-
-    def _migrate_benchmark_table(self, conn: sqlite3.Connection) -> None:
-        cols = self._table_columns(conn, "benchmark_index_data")
-        if not cols:
-            return
-
-        required = {
-            "index_name",
-            "raw_open",
-            "raw_high",
-            "raw_low",
-            "raw_close",
-            "record_status",
-        }
-
-        pk_rows = conn.execute("PRAGMA table_info(benchmark_index_data)").fetchall()
-        pk_cols = [str(r["name"]) for r in pk_rows if int(r["pk"]) > 0]
-        is_new_pk = pk_cols == ["index_code", "index_name", "trade_date"]
-        if required.issubset(set(cols)) and is_new_pk:
-            return
-
-        conn.executescript(
-            """
-            DROP VIEW IF EXISTS benchmark_dataset_v1;
-
-            CREATE TABLE benchmark_index_data_new (
-                index_code TEXT NOT NULL,
-                index_name TEXT NOT NULL,
-                trade_date TEXT NOT NULL,
-                open REAL NULL,
-                high REAL NULL,
-                low REAL NULL,
-                close REAL NULL,
-                raw_open TEXT NULL,
-                raw_high TEXT NULL,
-                raw_low TEXT NULL,
-                raw_close TEXT NULL,
-                volume INTEGER NULL,
-                turnover_value REAL NULL,
-                market_cap REAL NULL,
-                price_change REAL NULL,
-                change_rate REAL NULL,
-                record_status TEXT NOT NULL DEFAULT 'VALID',
-                source_name TEXT NOT NULL,
-                collected_at TEXT NOT NULL,
-                run_id TEXT NULL,
-                PRIMARY KEY (index_code, index_name, trade_date),
-                CHECK (
-                    open IS NULL OR high IS NULL OR low IS NULL OR close IS NULL
-                    OR high >= MAX(open, close, low)
-                ),
-                CHECK (
-                    open IS NULL OR high IS NULL OR low IS NULL OR close IS NULL
-                    OR low <= MIN(open, close, high)
-                ),
-                CHECK (volume IS NULL OR volume >= 0),
-                CHECK (record_status IN ('VALID', 'PARTIAL', 'INVALID')),
-                FOREIGN KEY (run_id) REFERENCES collection_runs(run_id)
-            );
-            """
-        )
-
-        has_index_name = "index_name" in cols
-        select_index_name = "COALESCE(NULLIF(TRIM(index_name), ''), index_code)" if has_index_name else "index_code"
-        conn.execute(
-            f"""
-            INSERT INTO benchmark_index_data_new(
-                index_code, index_name, trade_date, open, high, low, close,
-                volume, turnover_value, market_cap, price_change, change_rate,
-                record_status, source_name, collected_at, run_id
-            )
-            SELECT index_code, {select_index_name}, trade_date, open, high, low, close,
-                   volume, turnover_value, market_cap, price_change, change_rate,
-                   'VALID', source_name, collected_at, run_id
-            FROM benchmark_index_data
-            """
-        )
-        conn.executescript(
-            """
-            DROP TABLE benchmark_index_data;
-            ALTER TABLE benchmark_index_data_new RENAME TO benchmark_index_data;
-
-            CREATE VIEW benchmark_dataset_v1 AS
-            SELECT index_code, index_name, trade_date, open, high, low, close, volume,
-                   turnover_value, market_cap, price_change, change_rate, record_status,
-                   source_name, collected_at
-            FROM benchmark_index_data;
-
-            CREATE INDEX IF NOT EXISTS idx_benchmark_code_date ON benchmark_index_data(index_code, trade_date);
-            CREATE INDEX IF NOT EXISTS idx_benchmark_series_date ON benchmark_index_data(index_code, index_name, trade_date DESC);
-            CREATE INDEX IF NOT EXISTS idx_benchmark_status_date ON benchmark_index_data(record_status, trade_date);
-            """
-        )
 
     def insert_run(self, run: Dict) -> None:
         with self.connect() as conn:
@@ -306,7 +52,7 @@ class Repository:
                 INSERT INTO collection_runs(
                     run_id, pipeline_name, source_name, window_start, window_end, status,
                     started_at, finished_at, success_count, failure_count, warning_count, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     run["run_id"],
@@ -325,234 +71,279 @@ class Repository:
             )
 
     def update_run(self, run_id: str, fields: Dict) -> None:
+        if not fields:
+            return
+        assignments = sql.SQL(", ").join(
+            sql.SQL("{} = %s").format(sql.Identifier(k)) for k in fields.keys()
+        )
+        query = sql.SQL("UPDATE collection_runs SET {} WHERE run_id = %s").format(assignments)
         with self.connect() as conn:
-            sets = ", ".join([f"{k}=?" for k in fields.keys()])
-            conn.execute(f"UPDATE collection_runs SET {sets} WHERE run_id = ?", (*fields.values(), run_id))
+            conn.execute(query, [*fields.values(), run_id])
 
     def upsert_instruments(self, rows: Iterable[Dict]) -> None:
-        with self.connect() as conn:
-            conn.executemany(
-                """
-                INSERT INTO instruments(
-                    instrument_id, external_code, market_code, instrument_name, instrument_name_abbr,
-                    instrument_name_eng, listing_date, delisting_date, listed_shares, security_group,
-                    sector_name, stock_type, par_value, source_name, collected_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(instrument_id) DO UPDATE SET
-                    external_code=excluded.external_code,
-                    market_code=excluded.market_code,
-                    instrument_name=excluded.instrument_name,
-                    instrument_name_abbr=excluded.instrument_name_abbr,
-                    instrument_name_eng=excluded.instrument_name_eng,
-                    listing_date=excluded.listing_date,
-                    delisting_date=excluded.delisting_date,
-                    listed_shares=excluded.listed_shares,
-                    security_group=excluded.security_group,
-                    sector_name=excluded.sector_name,
-                    stock_type=excluded.stock_type,
-                    par_value=excluded.par_value,
-                    source_name=excluded.source_name,
-                    collected_at=excluded.collected_at,
-                    updated_at=excluded.updated_at
-                """,
-                [
-                    (
-                        r["instrument_id"],
-                        r["external_code"],
-                        r["market_code"],
-                        r["instrument_name"],
-                        r.get("instrument_name_abbr"),
-                        r.get("instrument_name_eng"),
-                        r["listing_date"],
-                        r.get("delisting_date"),
-                        r.get("listed_shares"),
-                        r.get("security_group"),
-                        r.get("sector_name"),
-                        r.get("stock_type"),
-                        r.get("par_value"),
-                        r["source_name"],
-                        r["collected_at"],
-                        r.get("updated_at"),
-                    )
-                    for r in rows
-                ],
+        payload = [
+            (
+                r["instrument_id"],
+                r["external_code"],
+                r["market_code"],
+                r["instrument_name"],
+                r.get("instrument_name_abbr"),
+                r.get("instrument_name_eng"),
+                r["listing_date"],
+                r.get("delisting_date"),
+                r.get("listed_shares"),
+                r.get("security_group"),
+                r.get("sector_name"),
+                r.get("stock_type"),
+                r.get("par_value"),
+                r["source_name"],
+                r["collected_at"],
+                r.get("updated_at"),
             )
+            for r in rows
+        ]
+        if not payload:
+            return
+
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO instruments(
+                        instrument_id, external_code, market_code, instrument_name, instrument_name_abbr,
+                        instrument_name_eng, listing_date, delisting_date, listed_shares, security_group,
+                        sector_name, stock_type, par_value, source_name, collected_at, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT(instrument_id) DO UPDATE SET
+                        external_code=excluded.external_code,
+                        market_code=excluded.market_code,
+                        instrument_name=excluded.instrument_name,
+                        instrument_name_abbr=excluded.instrument_name_abbr,
+                        instrument_name_eng=excluded.instrument_name_eng,
+                        listing_date=excluded.listing_date,
+                        delisting_date=excluded.delisting_date,
+                        listed_shares=excluded.listed_shares,
+                        security_group=excluded.security_group,
+                        sector_name=excluded.sector_name,
+                        stock_type=excluded.stock_type,
+                        par_value=excluded.par_value,
+                        source_name=excluded.source_name,
+                        collected_at=excluded.collected_at,
+                        updated_at=excluded.updated_at
+                    """,
+                    payload,
+                )
 
     def upsert_daily_market(self, rows: Iterable[Dict]) -> None:
-        with self.connect() as conn:
-            conn.executemany(
-                """
-                INSERT INTO daily_market_data(
-                    instrument_id, trade_date, open, high, low, close, volume, turnover_value,
-                    market_value, price_change, change_rate, listed_shares, is_trade_halted,
-                    is_under_supervision, record_status, source_name, collected_at, run_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(instrument_id, trade_date) DO UPDATE SET
-                    open=excluded.open,
-                    high=excluded.high,
-                    low=excluded.low,
-                    close=excluded.close,
-                    volume=excluded.volume,
-                    turnover_value=excluded.turnover_value,
-                    market_value=excluded.market_value,
-                    price_change=excluded.price_change,
-                    change_rate=excluded.change_rate,
-                    listed_shares=excluded.listed_shares,
-                    is_trade_halted=excluded.is_trade_halted,
-                    is_under_supervision=excluded.is_under_supervision,
-                    record_status=excluded.record_status,
-                    source_name=excluded.source_name,
-                    collected_at=excluded.collected_at,
-                    run_id=excluded.run_id
-                """,
-                [
-                    (
-                        r["instrument_id"],
-                        r["trade_date"],
-                        r["open"],
-                        r["high"],
-                        r["low"],
-                        r["close"],
-                        r["volume"],
-                        r.get("turnover_value"),
-                        r.get("market_value"),
-                        r.get("price_change"),
-                        r.get("change_rate"),
-                        r.get("listed_shares"),
-                        1 if r.get("is_trade_halted") else 0,
-                        1 if r.get("is_under_supervision") else 0,
-                        r.get("record_status", "VALID"),
-                        r["source_name"],
-                        r["collected_at"],
-                        r.get("run_id"),
-                    )
-                    for r in rows
-                ],
+        payload = [
+            (
+                r["instrument_id"],
+                r["trade_date"],
+                r["open"],
+                r["high"],
+                r["low"],
+                r["close"],
+                r["volume"],
+                r.get("turnover_value"),
+                r.get("market_value"),
+                r.get("price_change"),
+                r.get("change_rate"),
+                r.get("listed_shares"),
+                bool(r.get("is_trade_halted", False)),
+                bool(r.get("is_under_supervision", False)),
+                r.get("record_status", "VALID"),
+                r["source_name"],
+                r["collected_at"],
+                r.get("run_id"),
             )
+            for r in rows
+        ]
+        if not payload:
+            return
+
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO daily_market_data(
+                        instrument_id, trade_date, open, high, low, close, volume, turnover_value,
+                        market_value, price_change, change_rate, listed_shares, is_trade_halted,
+                        is_under_supervision, record_status, source_name, collected_at, run_id
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT(instrument_id, trade_date) DO UPDATE SET
+                        open=excluded.open,
+                        high=excluded.high,
+                        low=excluded.low,
+                        close=excluded.close,
+                        volume=excluded.volume,
+                        turnover_value=excluded.turnover_value,
+                        market_value=excluded.market_value,
+                        price_change=excluded.price_change,
+                        change_rate=excluded.change_rate,
+                        listed_shares=excluded.listed_shares,
+                        is_trade_halted=excluded.is_trade_halted,
+                        is_under_supervision=excluded.is_under_supervision,
+                        record_status=excluded.record_status,
+                        source_name=excluded.source_name,
+                        collected_at=excluded.collected_at,
+                        run_id=excluded.run_id
+                    """,
+                    payload,
+                )
 
     def upsert_benchmark(self, rows: Iterable[Dict]) -> None:
-        with self.connect() as conn:
-            conn.executemany(
-                """
-                INSERT INTO benchmark_index_data(
-                    index_code, index_name, trade_date, open, high, low, close,
-                    raw_open, raw_high, raw_low, raw_close,
-                    volume, turnover_value, market_cap, price_change, change_rate,
-                    record_status, source_name, collected_at, run_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(index_code, index_name, trade_date) DO UPDATE SET
-                    open=excluded.open,
-                    high=excluded.high,
-                    low=excluded.low,
-                    close=excluded.close,
-                    raw_open=excluded.raw_open,
-                    raw_high=excluded.raw_high,
-                    raw_low=excluded.raw_low,
-                    raw_close=excluded.raw_close,
-                    volume=excluded.volume,
-                    turnover_value=excluded.turnover_value,
-                    market_cap=excluded.market_cap,
-                    price_change=excluded.price_change,
-                    change_rate=excluded.change_rate,
-                    record_status=excluded.record_status,
-                    source_name=excluded.source_name,
-                    collected_at=excluded.collected_at,
-                    run_id=excluded.run_id
-                """,
-                [
-                    (
-                        r["index_code"],
-                        (r.get("index_name") or r["index_code"]),
-                        r["trade_date"],
-                        r["open"],
-                        r["high"],
-                        r["low"],
-                        r["close"],
-                        r.get("raw_open"),
-                        r.get("raw_high"),
-                        r.get("raw_low"),
-                        r.get("raw_close"),
-                        r.get("volume"),
-                        r.get("turnover_value"),
-                        r.get("market_cap"),
-                        r.get("price_change"),
-                        r.get("change_rate"),
-                        r.get("record_status", "VALID"),
-                        r["source_name"],
-                        r["collected_at"],
-                        r.get("run_id"),
-                    )
-                    for r in rows
-                ],
+        payload = [
+            (
+                r["index_code"],
+                (r.get("index_name") or r["index_code"]),
+                r["trade_date"],
+                r["open"],
+                r["high"],
+                r["low"],
+                r["close"],
+                r.get("raw_open"),
+                r.get("raw_high"),
+                r.get("raw_low"),
+                r.get("raw_close"),
+                r.get("volume"),
+                r.get("turnover_value"),
+                r.get("market_cap"),
+                r.get("price_change"),
+                r.get("change_rate"),
+                r.get("record_status", "VALID"),
+                r["source_name"],
+                r["collected_at"],
+                r.get("run_id"),
             )
+            for r in rows
+        ]
+        if not payload:
+            return
+
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO benchmark_index_data(
+                        index_code, index_name, trade_date, open, high, low, close,
+                        raw_open, raw_high, raw_low, raw_close,
+                        volume, turnover_value, market_cap, price_change, change_rate,
+                        record_status, source_name, collected_at, run_id
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT(index_code, index_name, trade_date) DO UPDATE SET
+                        open=excluded.open,
+                        high=excluded.high,
+                        low=excluded.low,
+                        close=excluded.close,
+                        raw_open=excluded.raw_open,
+                        raw_high=excluded.raw_high,
+                        raw_low=excluded.raw_low,
+                        raw_close=excluded.raw_close,
+                        volume=excluded.volume,
+                        turnover_value=excluded.turnover_value,
+                        market_cap=excluded.market_cap,
+                        price_change=excluded.price_change,
+                        change_rate=excluded.change_rate,
+                        record_status=excluded.record_status,
+                        source_name=excluded.source_name,
+                        collected_at=excluded.collected_at,
+                        run_id=excluded.run_id
+                    """,
+                    payload,
+                )
 
     def upsert_trading_calendar(self, rows: Iterable[Dict]) -> None:
-        with self.connect() as conn:
-            conn.executemany(
-                """
-                INSERT INTO trading_calendar(
-                    market_code, trade_date, is_open, holiday_name, source_name, collected_at, run_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(market_code, trade_date) DO UPDATE SET
-                    is_open=excluded.is_open,
-                    holiday_name=excluded.holiday_name,
-                    source_name=excluded.source_name,
-                    collected_at=excluded.collected_at,
-                    run_id=excluded.run_id
-                """,
-                [
-                    (
-                        r["market_code"],
-                        r["trade_date"],
-                        1 if r["is_open"] else 0,
-                        r.get("holiday_name"),
-                        r["source_name"],
-                        r["collected_at"],
-                        r.get("run_id"),
-                    )
-                    for r in rows
-                ],
+        payload = [
+            (
+                r["market_code"],
+                r["trade_date"],
+                bool(r["is_open"]),
+                r.get("holiday_name"),
+                r["source_name"],
+                r["collected_at"],
+                r.get("run_id"),
             )
+            for r in rows
+        ]
+        if not payload:
+            return
+
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO trading_calendar(
+                        market_code, trade_date, is_open, holiday_name, source_name, collected_at, run_id
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT(market_code, trade_date) DO UPDATE SET
+                        is_open=excluded.is_open,
+                        holiday_name=excluded.holiday_name,
+                        source_name=excluded.source_name,
+                        collected_at=excluded.collected_at,
+                        run_id=excluded.run_id
+                    """,
+                    payload,
+                )
 
     def insert_issues(self, rows: Iterable[Dict]) -> None:
-        with self.connect() as conn:
-            conn.executemany(
-                """
-                INSERT INTO data_quality_issues(
-                    dataset_name, trade_date, instrument_id, index_code, issue_code, severity,
-                    issue_detail, source_name, detected_at, run_id, resolved_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        r["dataset_name"],
-                        r.get("trade_date"),
-                        r.get("instrument_id"),
-                        r.get("index_code"),
-                        r["issue_code"],
-                        r["severity"],
-                        r.get("issue_detail"),
-                        r.get("source_name"),
-                        r["detected_at"],
-                        r.get("run_id"),
-                        r.get("resolved_at"),
-                    )
-                    for r in rows
-                ],
+        payload = [
+            (
+                r["dataset_name"],
+                r.get("trade_date"),
+                r.get("instrument_id"),
+                r.get("index_code"),
+                r["issue_code"],
+                r["severity"],
+                r.get("issue_detail"),
+                r.get("source_name"),
+                r["detected_at"],
+                r.get("run_id"),
+                r.get("resolved_at"),
             )
+            for r in rows
+        ]
+        if not payload:
+            return
 
-    def query(self, sql: str, params: tuple = ()) -> List[Dict]:
         with self.connect() as conn:
-            cur = conn.execute(sql, params)
-            return [dict(row) for row in cur.fetchall()]
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO data_quality_issues(
+                        dataset_name, trade_date, instrument_id, index_code, issue_code, severity,
+                        issue_detail, source_name, detected_at, run_id, resolved_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    payload,
+                )
+
+    def query(self, query_text: str, params: tuple = ()) -> List[Dict]:
+        if "?" in query_text and "%s" not in query_text:
+            query_text = query_text.replace("?", "%s")
+        with self.connect() as conn:
+            cur = conn.execute(query_text, params)
+            out: List[Dict] = []
+            for row in cur.fetchall():
+                normalized: Dict = {}
+                for key, value in dict(row).items():
+                    if isinstance(value, (date, datetime)):
+                        normalized[key] = value.isoformat()
+                    elif isinstance(value, UUID):
+                        normalized[key] = str(value)
+                    elif isinstance(value, Decimal):
+                        normalized[key] = float(value)
+                    else:
+                        normalized[key] = value
+                out.append(normalized)
+            return out
 
     def get_core_market(self, market_code: str, date_from: str, date_to: str) -> List[Dict]:
         return self.query(
             """
             SELECT *
             FROM core_market_dataset_v1
-            WHERE market_code = ?
-              AND trade_date BETWEEN ? AND ?
+            WHERE market_code = %s
+              AND trade_date BETWEEN %s AND %s
             ORDER BY trade_date, instrument_id
             """,
             (market_code, date_from, date_to),
@@ -568,21 +359,21 @@ class Repository:
         codes = list(index_codes)
         if not codes:
             return []
-        placeholders = ", ".join(["?"] * len(codes))
-        params: List = codes + [date_from, date_to]
+        code_placeholders = ", ".join(["%s"] * len(codes))
+        params: List = list(codes) + [date_from, date_to]
         where_series = ""
         if series_names:
             names = [n for n in series_names if n]
             if names:
-                series_placeholders = ", ".join(["?"] * len(names))
+                series_placeholders = ", ".join(["%s"] * len(names))
                 where_series = f" AND index_name IN ({series_placeholders})"
                 params.extend(names)
         return self.query(
             f"""
             SELECT index_code, index_name, trade_date, open, high, low, close, record_status
             FROM benchmark_dataset_v1
-            WHERE index_code IN ({placeholders})
-              AND trade_date BETWEEN ? AND ?
+            WHERE index_code IN ({code_placeholders})
+              AND trade_date BETWEEN %s AND %s
               {where_series}
             ORDER BY trade_date, index_code, index_name
             """,
@@ -594,8 +385,8 @@ class Repository:
             """
             SELECT market_code, trade_date, is_open, holiday_name
             FROM trading_calendar_v1
-            WHERE market_code = ?
-              AND trade_date BETWEEN ? AND ?
+            WHERE market_code = %s
+              AND trade_date BETWEEN %s AND %s
             ORDER BY trade_date
             """,
             (market_code, date_from, date_to),
@@ -607,7 +398,7 @@ class Repository:
             SELECT dataset_name, trade_date, instrument_id, index_code, issue_code,
                    severity, issue_detail, run_id, detected_at
             FROM data_quality_issues
-            WHERE trade_date BETWEEN ? AND ?
+            WHERE trade_date BETWEEN %s AND %s
               AND severity IN ('WARN', 'ERROR')
             ORDER BY detected_at
             """,
@@ -620,7 +411,7 @@ class Repository:
             cur = conn.execute(
                 """
                 UPDATE data_quality_issues
-                SET resolved_at = ?
+                SET resolved_at = %s
                 WHERE resolved_at IS NULL
                   AND dataset_name = 'daily_market_data'
                   AND issue_code = 'INVALID_DAILY_MARKET_ROW'
@@ -629,3 +420,4 @@ class Repository:
                 (resolved_time,),
             )
             return int(cur.rowcount or 0)
+

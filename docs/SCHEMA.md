@@ -75,7 +75,7 @@
 - 벤치마크 지수 일봉 시계열
 
 핵심 키:
-- PK: `(index_code, trade_date)`
+- PK: `(index_code, index_name, trade_date)`
 - FK: `run_id -> collection_runs`
 
 핵심 컬럼:
@@ -189,7 +189,7 @@ CREATE TABLE collection_runs (
     failure_count BIGINT NOT NULL DEFAULT 0,
     warning_count BIGINT NOT NULL DEFAULT 0,
     metadata JSONB NULL,
-    CHECK (status IN ('SUCCESS', 'PARTIAL', 'FAILED')),
+    CHECK (status IN ('RUNNING', 'SUCCESS', 'PARTIAL', 'FAILED')),
     CHECK (window_end >= window_start)
 );
 
@@ -231,17 +231,36 @@ CREATE TABLE daily_market_data (
 
 CREATE TABLE benchmark_index_data (
     index_code VARCHAR(30) NOT NULL,
+    index_name VARCHAR(200) NOT NULL,
     trade_date DATE NOT NULL,
-    open NUMERIC(20,6) NOT NULL,
-    high NUMERIC(20,6) NOT NULL,
-    low NUMERIC(20,6) NOT NULL,
+    open NUMERIC(20,6) NULL,
+    high NUMERIC(20,6) NULL,
+    low NUMERIC(20,6) NULL,
     close NUMERIC(20,6) NOT NULL,
+    raw_open VARCHAR(40) NULL,
+    raw_high VARCHAR(40) NULL,
+    raw_low VARCHAR(40) NULL,
+    raw_close VARCHAR(40) NULL,
+    volume BIGINT NULL,
+    turnover_value NUMERIC(28,6) NULL,
+    market_cap NUMERIC(28,6) NULL,
+    price_change NUMERIC(20,6) NULL,
+    change_rate NUMERIC(20,6) NULL,
+    record_status VARCHAR(20) NOT NULL DEFAULT 'VALID',
     source_name VARCHAR(30) NOT NULL,
     collected_at TIMESTAMP NOT NULL,
     run_id UUID NULL,
-    PRIMARY KEY (index_code, trade_date),
-    CHECK (high >= GREATEST(open, close, low)),
-    CHECK (low <= LEAST(open, close, high))
+    PRIMARY KEY (index_code, index_name, trade_date),
+    CHECK (
+      open IS NULL OR high IS NULL OR low IS NULL OR close IS NULL
+      OR high >= GREATEST(open, close, low)
+    ),
+    CHECK (
+      open IS NULL OR high IS NULL OR low IS NULL OR close IS NULL
+      OR low <= LEAST(open, close, high)
+    ),
+    CHECK (volume IS NULL OR volume >= 0),
+    CHECK (record_status IN ('VALID', 'PARTIAL', 'INVALID'))
 );
 
 CREATE TABLE data_quality_issues (
@@ -308,7 +327,7 @@ FROM daily_market_data d
 JOIN instruments i ON i.instrument_id = d.instrument_id;
 
 CREATE VIEW benchmark_dataset_v1 AS
-SELECT index_code, trade_date, open, high, low, close, source_name, collected_at
+SELECT index_code, index_name, trade_date, open, high, low, close, record_status, source_name, collected_at
 FROM benchmark_index_data;
 
 CREATE VIEW trading_calendar_v1 AS

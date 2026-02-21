@@ -3,6 +3,7 @@ from datetime import date
 import pytest
 from financial_data_collector.collect_krx_data import (
     _extract_rows,
+    _instrument_uuid,
     _normalize_daily_market,
     _normalize_instrument_code,
     _normalize_instruments,
@@ -88,7 +89,7 @@ def test_normalize_daily_market_trade_halted_ohlc_corrected():
         }
     ]
 
-    normalized = _normalize_daily_market(rows, trade_date=date(2026, 1, 2))
+    normalized = _normalize_daily_market(rows, market_code="KOSDAQ", trade_date=date(2026, 1, 2))
 
     assert len(normalized) == 1
     r = normalized[0]
@@ -112,7 +113,7 @@ def test_normalize_daily_market_non_halted_not_misclassified():
         }
     ]
 
-    normalized = _normalize_daily_market(rows, trade_date=date(2026, 1, 2))
+    normalized = _normalize_daily_market(rows, market_code="KOSDAQ", trade_date=date(2026, 1, 2))
 
     assert len(normalized) == 1
     r = normalized[0]
@@ -123,7 +124,7 @@ def test_normalize_daily_market_non_halted_not_misclassified():
     assert r["close"] == 105.0
 
 
-def test_normalize_daily_market_all_zero_edge_case_not_halted():
+def test_normalize_daily_market_all_zero_edge_case_halted():
     rows = [
         {
             "ISU_SRT_CD": "000003",
@@ -135,22 +136,70 @@ def test_normalize_daily_market_all_zero_edge_case_not_halted():
         }
     ]
 
-    normalized = _normalize_daily_market(rows, trade_date=date(2026, 1, 2))
+    normalized = _normalize_daily_market(rows, market_code="KOSDAQ", trade_date=date(2026, 1, 2))
 
     assert len(normalized) == 1
     r = normalized[0]
-    assert r["is_trade_halted"] is False
+    assert r["is_trade_halted"] is True
     assert r["open"] == 0.0
     assert r["high"] == 0.0
     assert r["low"] == 0.0
     assert r["close"] == 0.0
 
 
+def test_normalize_daily_market_same_ohlc_with_volume_not_halted():
+    rows = [
+        {
+            "ISU_SRT_CD": "000004",
+            "TDD_OPNPRC": "100",
+            "TDD_HGPRC": "100",
+            "TDD_LWPRC": "100",
+            "TDD_CLSPRC": "100",
+            "ACC_TRDVOL": "10",
+        }
+    ]
+
+    normalized = _normalize_daily_market(rows, market_code="KOSDAQ", trade_date=date(2026, 1, 2))
+
+    assert len(normalized) == 1
+    r = normalized[0]
+    assert r["is_trade_halted"] is False
+    assert r["open"] == 100.0
+    assert r["high"] == 100.0
+    assert r["low"] == 100.0
+    assert r["close"] == 100.0
+    assert r["volume"] == 10
+
+
+def test_normalize_daily_market_zero_ohl_with_positive_volume_halted_and_corrected():
+    rows = [
+        {
+            "ISU_SRT_CD": "000005",
+            "TDD_OPNPRC": "0",
+            "TDD_HGPRC": "0",
+            "TDD_LWPRC": "0",
+            "TDD_CLSPRC": "600",
+            "ACC_TRDVOL": "120",
+        }
+    ]
+
+    normalized = _normalize_daily_market(rows, market_code="KOSDAQ", trade_date=date(2026, 1, 2))
+
+    assert len(normalized) == 1
+    r = normalized[0]
+    assert r["is_trade_halted"] is True
+    assert r["open"] == 600.0
+    assert r["high"] == 600.0
+    assert r["low"] == 600.0
+    assert r["close"] == 600.0
+    assert r["volume"] == 120
+
+
 def test_daily_market_collector_accepts_corrected_trade_halted_row(repo):
     InstrumentCollector(repo).collect(
         [
             {
-                "instrument_id": "000001",
+                "instrument_id": _instrument_uuid("KOSDAQ", "000001"),
                 "external_code": "000001",
                 "market_code": "kosdaq",
                 "instrument_name": "halted",
@@ -171,24 +220,64 @@ def test_daily_market_collector_accepts_corrected_trade_halted_row(repo):
                 "ACC_TRDVOL": "0",
             }
         ],
+        market_code="KOSDAQ",
         trade_date=date(2026, 1, 2),
     )
 
     count = DailyMarketCollector(repo).collect(rows, "krx", "r1")
     assert count == 1
 
-    saved = repo.query("SELECT open, high, low, close, volume, is_trade_halted FROM daily_market_data WHERE instrument_id='000001'")[0]
+    saved = repo.query("SELECT open, high, low, close, volume, is_trade_halted FROM daily_market_data")[0]
     assert saved["open"] == 12345.0
     assert saved["high"] == 12345.0
     assert saved["low"] == 12345.0
     assert saved["close"] == 12345.0
     assert saved["volume"] == 0
-    assert saved["is_trade_halted"] == 1
+    assert saved["is_trade_halted"] is True
 
-    issues = repo.query(
-        "SELECT issue_code FROM data_quality_issues WHERE instrument_id='000001' AND issue_code='TRADE_HALTED_OHLC_CORRECTED'"
-    )
+    issues = repo.query("SELECT issue_code FROM data_quality_issues WHERE issue_code='TRADE_HALTED_OHLC_CORRECTED'")
     assert len(issues) == 0
+
+
+def test_daily_market_collector_accepts_same_ohlc_zero_volume_as_halted(repo):
+    InstrumentCollector(repo).collect(
+        [
+            {
+                "instrument_id": _instrument_uuid("KOSDAQ", "000004"),
+                "external_code": "000004",
+                "market_code": "kosdaq",
+                "instrument_name": "flat halted",
+                "listing_date": "2020-01-01",
+            }
+        ],
+        "krx",
+    )
+
+    rows = _normalize_daily_market(
+        [
+            {
+                "ISU_SRT_CD": "000004",
+                "TDD_OPNPRC": "600",
+                "TDD_HGPRC": "600",
+                "TDD_LWPRC": "600",
+                "TDD_CLSPRC": "600",
+                "ACC_TRDVOL": "0",
+            }
+        ],
+        market_code="KOSDAQ",
+        trade_date=date(2026, 1, 2),
+    )
+
+    count = DailyMarketCollector(repo).collect(rows, "krx", "r1")
+    assert count == 1
+
+    saved = repo.query("SELECT open, high, low, close, volume, is_trade_halted FROM daily_market_data")[0]
+    assert saved["open"] == 600.0
+    assert saved["high"] == 600.0
+    assert saved["low"] == 600.0
+    assert saved["close"] == 600.0
+    assert saved["volume"] == 0
+    assert saved["is_trade_halted"] is True
 
 
 @pytest.mark.parametrize(
@@ -218,7 +307,7 @@ def test_normalize_instruments_uses_6_digit_string_code():
 
     normalized = _normalize_instruments(rows, "KOSPI")
     assert len(normalized) == 1
-    assert normalized[0]["instrument_id"] == "005930"
+    assert normalized[0]["instrument_id"] == _instrument_uuid("KOSPI", "005930")
     assert normalized[0]["external_code"] == "005930"
 
 
@@ -233,6 +322,6 @@ def test_normalize_daily_market_accepts_isu_cd_prefixed_code():
             "ACC_TRDVOL": "1000",
         }
     ]
-    normalized = _normalize_daily_market(rows, trade_date=date(2026, 1, 2))
+    normalized = _normalize_daily_market(rows, market_code="KOSPI", trade_date=date(2026, 1, 2))
     assert len(normalized) == 1
-    assert normalized[0]["instrument_id"] == "005930"
+    assert normalized[0]["instrument_id"] == _instrument_uuid("KOSPI", "005930")

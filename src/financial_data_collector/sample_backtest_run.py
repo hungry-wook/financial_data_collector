@@ -10,7 +10,7 @@ from .repository import Repository
 
 @dataclass
 class SampleRunConfig:
-    db_path: str
+    database_url: str
     output_path: str
     market_code: str = "KOSDAQ"
     index_code: str = "KOSDAQ"
@@ -18,13 +18,13 @@ class SampleRunConfig:
 
 
 def run_backtest_sample(config: SampleRunConfig, export_service: Optional[ExportService] = None) -> Dict:
-    repo = Repository(config.db_path)
+    repo = Repository(config.database_url)
     repo.init_schema()
 
     InstrumentCollector(repo).collect(
         [
             {
-                "instrument_id": "sample_i1",
+                "instrument_id": "550e8400-e29b-41d4-a716-446655440001",
                 "external_code": "0001",
                 "market_code": config.market_code,
                 "instrument_name": "Sample Instrument",
@@ -36,7 +36,7 @@ def run_backtest_sample(config: SampleRunConfig, export_service: Optional[Export
     DailyMarketCollector(repo).collect(
         [
             {
-                "instrument_id": "sample_i1",
+                "instrument_id": "550e8400-e29b-41d4-a716-446655440001",
                 "trade_date": config.base_date,
                 "open": 100,
                 "high": 110,
@@ -73,7 +73,7 @@ def run_backtest_sample(config: SampleRunConfig, export_service: Optional[Export
                 "holiday_name": None,
                 "source_name": "sample",
                 "collected_at": f"{config.base_date.isoformat()}T00:00:00",
-                "run_id": "sample_run",
+                "run_id": None,
             }
         ]
     )

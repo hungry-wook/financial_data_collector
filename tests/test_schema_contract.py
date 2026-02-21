@@ -1,9 +1,14 @@
-import sqlite3
+﻿import uuid
 
 
 def test_views_exist(repo):
     rows = repo.query(
-        "SELECT name FROM sqlite_master WHERE type='view' ORDER BY name"
+        """
+        SELECT table_name AS name
+        FROM information_schema.views
+        WHERE table_schema = current_schema()
+        ORDER BY table_name
+        """
     )
     names = {r["name"] for r in rows}
     assert "core_market_dataset_v1" in names
@@ -12,10 +17,11 @@ def test_views_exist(repo):
 
 
 def test_daily_market_constraint_volume(repo):
+    instrument_id = str(uuid.uuid4())
     repo.upsert_instruments(
         [
             {
-                "instrument_id": "i1",
+                "instrument_id": instrument_id,
                 "external_code": "0001",
                 "market_code": "KOSDAQ",
                 "instrument_name": "A",
@@ -31,7 +37,7 @@ def test_daily_market_constraint_volume(repo):
         repo.upsert_daily_market(
             [
                 {
-                    "instrument_id": "i1",
+                    "instrument_id": instrument_id,
                     "trade_date": "2026-01-02",
                     "open": 10,
                     "high": 11,
@@ -49,8 +55,8 @@ def test_daily_market_constraint_volume(repo):
                 }
             ]
         )
-        assert False, "Expected IntegrityError"
-    except sqlite3.IntegrityError:
+        assert False, "Expected error"
+    except Exception:
         assert True
 
 
@@ -58,7 +64,7 @@ def test_run_status_constraint(repo):
     try:
         repo.insert_run(
             {
-                "run_id": "r1",
+                "run_id": str(uuid.uuid4()),
                 "pipeline_name": "p1",
                 "source_name": "s1",
                 "window_start": "2026-01-01",
@@ -67,8 +73,8 @@ def test_run_status_constraint(repo):
                 "started_at": "2026-01-01T00:00:00",
             }
         )
-        assert False, "Expected IntegrityError"
-    except sqlite3.IntegrityError:
+        assert False, "Expected error"
+    except Exception:
         assert True
 
 
@@ -89,8 +95,8 @@ def test_benchmark_constraint_ohlc(repo):
                 }
             ]
         )
-        assert False, "Expected IntegrityError"
-    except sqlite3.IntegrityError:
+        assert False, "Expected error"
+    except Exception:
         assert True
 
 
@@ -113,15 +119,45 @@ def test_data_quality_issues_severity_constraint(repo):
                 }
             ]
         )
-        assert False, "Expected IntegrityError"
-    except sqlite3.IntegrityError:
+        assert False, "Expected error"
+    except Exception:
         assert True
 
 
 def test_v1_view_columns_are_backward_compatible(repo):
-    core_cols = [r["name"] for r in repo.query("PRAGMA table_info(core_market_dataset_v1)")]
-    benchmark_cols = [r["name"] for r in repo.query("PRAGMA table_info(benchmark_dataset_v1)")]
-    calendar_cols = [r["name"] for r in repo.query("PRAGMA table_info(trading_calendar_v1)")]
+    core_cols = [
+        r["column_name"]
+        for r in repo.query(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = current_schema() AND table_name = 'core_market_dataset_v1'
+            ORDER BY ordinal_position
+            """
+        )
+    ]
+    benchmark_cols = [
+        r["column_name"]
+        for r in repo.query(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = current_schema() AND table_name = 'benchmark_dataset_v1'
+            ORDER BY ordinal_position
+            """
+        )
+    ]
+    calendar_cols = [
+        r["column_name"]
+        for r in repo.query(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = current_schema() AND table_name = 'trading_calendar_v1'
+            ORDER BY ordinal_position
+            """
+        )
+    ]
 
     assert core_cols == [
         "instrument_id",

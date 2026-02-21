@@ -1,25 +1,21 @@
-"""
+﻿"""
 FastAPI server for Backtest Export API
 Run with: uvicorn financial_data_collector.server:app --host 0.0.0.0 --port 8000
 """
-import asyncio
+import os
 from contextlib import asynccontextmanager
-from typing import Dict
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from .api import BacktestExportAPI
 from .dashboard_routes import router as dashboard_router
-from .export_service import ExportRequest, ExportService
+from .export_service import ExportService
 from .repository import Repository
 
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 
-# Configuration
-DB_PATH = "data/financial_data.db"
-
-# Global service instance
-export_service: ExportService = None
+export_service: ExportService | None = None
 
 
 class ExportRequestBody(BaseModel):
@@ -35,15 +31,17 @@ class ExportRequestBody(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
     global export_service
-    repo = Repository(DB_PATH)
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is required")
+
+    repo = Repository(DATABASE_URL)
+    repo.init_schema()
     app.state.repo = repo
     export_service = ExportService(repo)
-    print(f"✅ Export service initialized with DB: {DB_PATH}")
+    print("Export service initialized with PostgreSQL")
     yield
-    # Shutdown
-    print("👋 Shutting down...")
+    print("Shutting down")
 
 
 app = FastAPI(
@@ -55,8 +53,6 @@ app = FastAPI(
 
 app.include_router(dashboard_router)
 
-api = None  # Will be initialized after startup
-
 
 def get_api() -> BacktestExportAPI:
     if export_service is None:
@@ -65,12 +61,10 @@ def get_api() -> BacktestExportAPI:
 
 
 def run_export_job(job_id: str):
-    """Background task to run export job"""
     try:
         export_service.run_job(job_id)
-        print(f"✅ Export job {job_id} completed")
-    except Exception as e:
-        print(f"❌ Export job {job_id} failed: {e}")
+    except Exception as exc:
+        print(f"Export job {job_id} failed: {exc}")
 
 
 @app.get("/")
@@ -89,29 +83,26 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "db_path": DB_PATH}
+    try:
+        Repository(DATABASE_URL).query("SELECT 1 as ok")
+        return {"status": "healthy", "db_backend": "postgresql"}
+    except Exception as exc:
+        return {"status": "unhealthy", "db_backend": "postgresql", "error": str(exc)}
 
 
 @app.post("/api/v1/backtest/exports", status_code=202)
 async def create_export(request: ExportRequestBody, background_tasks: BackgroundTasks):
-    """
-    Create a new export job and run it in the background.
-    Returns immediately with job_id.
-    """
     api = get_api()
     status_code, response = api.post_exports(request.model_dump())
 
     if status_code == 202:
-        job_id = response["job_id"]
-        # Run export in background
-        background_tasks.add_task(run_export_job, job_id)
+        background_tasks.add_task(run_export_job, response["job_id"])
 
     return response
 
 
 @app.get("/api/v1/backtest/exports/{job_id}")
 async def get_export_status(job_id: str):
-    """Get the status of an export job"""
     api = get_api()
     status_code, response = api.get_export(job_id)
 
@@ -123,7 +114,6 @@ async def get_export_status(job_id: str):
 
 @app.get("/api/v1/backtest/exports/{job_id}/manifest")
 async def get_manifest(job_id: str):
-    """Get the manifest of a completed export job"""
     api = get_api()
     status_code, response = api.get_manifest(job_id)
 
