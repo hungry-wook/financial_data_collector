@@ -80,7 +80,7 @@ def run_backtest_sample(config: SampleRunConfig, export_service: Optional[Export
 
     service = export_service or ExportService(repo)
     request = ExportRequest(
-        market_code=config.market_code,
+        market_codes=[config.market_code],
         index_codes=[config.index_code],
         date_from=config.base_date.isoformat(),
         date_to=config.base_date.isoformat(),

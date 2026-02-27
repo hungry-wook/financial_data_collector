@@ -29,7 +29,7 @@ class KRXSettings:
 
     @classmethod
     def from_env(cls) -> "KRXSettings":
-        auth_key = os.getenv("KRX_AUTH_KEY", "") or os.getenv("KRX_OPENAPI_KEY", "")
+        auth_key = os.getenv("KRX_AUTH_KEY", "")
         return cls(
             auth_key=auth_key,
             daily_limit=int(os.getenv("KRX_DAILY_LIMIT", "10000")),
@@ -38,7 +38,7 @@ class KRXSettings:
     def validate(self) -> None:
         missing = []
         if not self.auth_key:
-            missing.append("KRX_AUTH_KEY(or KRX_OPENAPI_KEY)")
+            missing.append("KRX_AUTH_KEY")
         if self.daily_limit <= 0:
             missing.append("KRX_DAILY_LIMIT(>0)")
         if missing:

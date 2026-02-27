@@ -22,7 +22,7 @@ uv run uvicorn financial_data_collector.server:app --host 0.0.0.0 --port 8000
 4. Request body ?낅젰:
 ```json
 {
-  "market_code": "KOSDAQ",
+  "market_codes": ["KOSDAQ", "KOSPI"],
   "index_codes": ["KOSDAQ", "KOSPI"],
   "date_from": "2026-01-02",
   "date_to": "2026-01-03",
@@ -40,7 +40,7 @@ uv run uvicorn financial_data_collector.server:app --host 0.0.0.0 --port 8000
 JOB_ID=$(curl -X POST http://localhost:8000/api/v1/backtest/exports \
   -H "Content-Type: application/json" \
   -d '{
-    "market_code": "KOSDAQ",
+    "market_codes": ["KOSDAQ", "KOSPI"],
     "index_codes": ["KOSDAQ", "KOSPI"],
     "date_from": "2026-01-02",
     "date_to": "2026-01-03",
@@ -65,7 +65,7 @@ import time
 
 # Export ?붿껌
 response = requests.post("http://localhost:8000/api/v1/backtest/exports", json={
-    "market_code": "KOSDAQ",
+    "market_codes": ["KOSDAQ", "KOSPI"],
     "index_codes": ["KOSDAQ", "KOSPI"],
     "date_from": "2026-01-02",
     "date_to": "2026-01-03",
@@ -146,7 +146,7 @@ uv run uvicorn financial_data_collector.server:app --host 0.0.0.0 --port 8000
 curl -X POST http://localhost:8000/api/v1/backtest/exports \
   -H "Content-Type: application/json" \
   -d '{
-    "market_code": "KOSDAQ",
+    "market_codes": ["KOSDAQ", "KOSPI"],
     "index_codes": ["KOSDAQ", "KOSPI"],
     "date_from": "2024-01-01",
     "date_to": "2024-12-31",
@@ -186,7 +186,7 @@ periods = [
 
 def export_period(date_from, date_to, label):
     response = requests.post("http://localhost:8000/api/v1/backtest/exports", json={
-        "market_code": "KOSDAQ",
+        "market_codes": ["KOSDAQ", "KOSPI"],
         "index_codes": ["KOSDAQ", "KOSPI"],
         "date_from": date_from,
         "date_to": date_to,
@@ -308,3 +308,54 @@ docker compose --profile collector run --rm \
 Notes:
 - Dashboard instrument tab is code-based (`external_code`) and does not expose UUIDs.
 - Run status policy: `FAILED` only when errors exist, `PARTIAL` when warnings only.
+
+## Just-based runtime (recommended on Windows)
+
+Use `just` as a task runner for consistent local commands.
+
+```bash
+# Show commands
+just
+
+# Start stack
+just up
+
+# Check status/health
+just ps
+just health
+
+# One-shot range collection (DATE_FROM DATE_TO required)
+just collect 2026-02-14 2026-02-21
+
+# Follow API logs
+just logs api
+
+# Stop stack
+just down
+```
+
+Optional local commands:
+
+```bash
+# Run API directly with uvicorn
+just serve-local
+
+# Run collector directly with uv
+just collect-local 2026-02-20 2026-02-20
+```
+
+## Security and Recovery
+
+- PostgreSQL is internal-only in compose (no host `5432` exposure by default).
+- Update `.env` with a strong `POSTGRES_PASSWORD`.
+- If DB credentials changed after initial volume creation, reinitialize for dev/test:
+
+```bash
+just reset-db
+```
+
+- If `just health` fails, run:
+
+```bash
+just doctor
+```

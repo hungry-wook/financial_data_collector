@@ -41,9 +41,9 @@ SELECT
     is_under_supervision,
     record_status
 FROM core_market_dataset_v1
-WHERE market_code = :market_code
+WHERE market_code IN :market_codes
   AND trade_date BETWEEN :date_from AND :date_to
-ORDER BY trade_date, instrument_id;
+ORDER BY trade_date, market_code, instrument_id;
 ```
 
 ## 4.2 벤치마크 패널
@@ -66,9 +66,9 @@ SELECT
     is_open,
     holiday_name
 FROM trading_calendar_v1
-WHERE market_code = :market_code
+WHERE market_code IN :market_codes
   AND trade_date BETWEEN :date_from AND :date_to
-ORDER BY trade_date;
+ORDER BY market_code, trade_date;
 ```
 
 ## 4.4 품질 이슈 (옵션)
@@ -98,7 +98,7 @@ ORDER BY detected_at;
 
 ## 6. API로 감쌀 때의 최소 엔드포인트
 1. `POST /api/v1/backtest/export`
-- body: `market_code`, `index_code`, `date_from`, `date_to`, `format(parquet|csv)`
+- body: `market_codes`, `index_codes`, `date_from`, `date_to`, `format(parquet|csv)`
 - 동작: 비동기 추출 작업 생성
 
 2. `GET /api/v1/backtest/export/{job_id}`

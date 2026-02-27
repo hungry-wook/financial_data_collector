@@ -27,6 +27,20 @@ CREATE TABLE instruments (
     CHECK (delisting_date IS NULL OR delisting_date >= listing_date)
 );
 
+CREATE TABLE instrument_delisting_snapshot (
+    delisting_snapshot_id BIGSERIAL PRIMARY KEY,
+    market_code VARCHAR(20) NOT NULL,
+    external_code VARCHAR(20) NOT NULL,
+    delisting_date DATE NOT NULL,
+    delisting_reason TEXT NULL,
+    note TEXT NULL,
+    source_name VARCHAR(30) NOT NULL,
+    collected_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NULL,
+    run_id UUID NULL,
+    UNIQUE (market_code, external_code)
+);
+
 CREATE TABLE collection_runs (
     run_id UUID PRIMARY KEY,
     pipeline_name VARCHAR(50) NOT NULL,
@@ -133,9 +147,30 @@ CREATE TABLE data_quality_issues (
     CHECK (severity IN ('INFO', 'WARN', 'ERROR'))
 );
 
+CREATE TABLE export_jobs (
+    job_id UUID PRIMARY KEY,
+    status VARCHAR(20) NOT NULL,
+    progress INTEGER NOT NULL DEFAULT 0,
+    submitted_at TIMESTAMP NOT NULL,
+    started_at TIMESTAMP NULL,
+    finished_at TIMESTAMP NULL,
+    output_path TEXT NULL,
+    files JSONB NULL,
+    row_counts JSONB NULL,
+    error_code VARCHAR(50) NULL,
+    error_message TEXT NULL,
+    request_payload JSONB NOT NULL,
+    CHECK (status IN ('PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED')),
+    CHECK (progress >= 0 AND progress <= 100)
+);
+
 ALTER TABLE daily_market_data
 ADD CONSTRAINT fk_daily_market_data_instrument
 FOREIGN KEY (instrument_id) REFERENCES instruments(instrument_id);
+
+ALTER TABLE instrument_delisting_snapshot
+ADD CONSTRAINT fk_instrument_delisting_snapshot_run
+FOREIGN KEY (run_id) REFERENCES collection_runs(run_id);
 
 ALTER TABLE daily_market_data
 ADD CONSTRAINT fk_daily_market_data_run
@@ -158,6 +193,8 @@ ADD CONSTRAINT fk_data_quality_issues_run
 FOREIGN KEY (run_id) REFERENCES collection_runs(run_id);
 
 CREATE INDEX idx_instruments_market_code ON instruments(market_code, external_code);
+CREATE INDEX idx_delisting_snapshot_market_date ON instrument_delisting_snapshot(market_code, delisting_date);
+CREATE INDEX idx_delisting_snapshot_external_code ON instrument_delisting_snapshot(external_code);
 CREATE INDEX idx_daily_trade_date ON daily_market_data(trade_date);
 CREATE INDEX idx_daily_status_date ON daily_market_data(record_status, trade_date);
 CREATE INDEX idx_index_trade_date ON benchmark_index_data(index_code, trade_date);
@@ -166,6 +203,7 @@ CREATE INDEX idx_calendar_market_open_date ON trading_calendar(market_code, is_o
 CREATE INDEX idx_issues_date ON data_quality_issues(trade_date, severity);
 CREATE INDEX idx_issues_instrument_date ON data_quality_issues(instrument_id, trade_date);
 CREATE INDEX idx_runs_pipeline_time ON collection_runs(pipeline_name, started_at DESC);
+CREATE INDEX idx_export_jobs_status_submitted_at ON export_jobs(status, submitted_at DESC);
 
 -- Consumer views
 CREATE VIEW core_market_dataset_v1 AS
@@ -345,6 +383,17 @@ COMMENT ON COLUMN instruments.delisting_date IS 'Delisting date, if applicable.'
 COMMENT ON COLUMN instruments.source_name IS 'Upstream source name for master data.';
 COMMENT ON COLUMN instruments.collected_at IS 'UTC timestamp when the row was collected.';
 COMMENT ON COLUMN instruments.updated_at IS 'UTC timestamp when the row was last updated.';
+
+COMMENT ON TABLE instrument_delisting_snapshot IS 'Latest delisting details by market_code and external_code.';
+COMMENT ON COLUMN instrument_delisting_snapshot.market_code IS 'Market classification code.';
+COMMENT ON COLUMN instrument_delisting_snapshot.external_code IS 'Exchange-level instrument code.';
+COMMENT ON COLUMN instrument_delisting_snapshot.delisting_date IS 'Delisting effective date.';
+COMMENT ON COLUMN instrument_delisting_snapshot.delisting_reason IS 'Delisting reason from source.';
+COMMENT ON COLUMN instrument_delisting_snapshot.note IS 'Supplementary note from source.';
+COMMENT ON COLUMN instrument_delisting_snapshot.source_name IS 'Upstream source name for delisting detail.';
+COMMENT ON COLUMN instrument_delisting_snapshot.collected_at IS 'UTC timestamp when the snapshot row was collected.';
+COMMENT ON COLUMN instrument_delisting_snapshot.updated_at IS 'UTC timestamp when the snapshot row was last updated.';
+COMMENT ON COLUMN instrument_delisting_snapshot.run_id IS 'Ingestion run identifier.';
 
 COMMENT ON TABLE collection_runs IS 'Execution metadata for ingestion runs.';
 COMMENT ON COLUMN collection_runs.run_id IS 'Unique ingestion run identifier.';

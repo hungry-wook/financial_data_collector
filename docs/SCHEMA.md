@@ -26,6 +26,19 @@
 - `listing_date, delisting_date`
 - `source_name, collected_at, updated_at`
 
+## 3.1.1 `instrument_delisting_snapshot`
+역할:
+- KIND 상장폐지 상세정보의 최신 스냅샷(시장+종목 단위 1건)
+
+핵심 키:
+- PK: `delisting_snapshot_id`
+- Unique: `(market_code, external_code)`
+
+핵심 컬럼:
+- `market_code, external_code, delisting_date`
+- `delisting_reason, note`
+- `source_name, collected_at, updated_at, run_id`
+
 ## 3.2 `collection_runs`
 역할:
 - 수집 실행 단위 메타데이터

@@ -90,3 +90,14 @@ class DataQualityIssue:
     detected_at: datetime
     run_id: Optional[str]
     resolved_at: Optional[datetime] = None
+
+
+@dataclass
+class KindDelistingRow:
+    market_code: str
+    external_code: str
+    delisting_date: date
+    delisting_reason: Optional[str]
+    note: Optional[str]
+    source_name: str
+    collected_at: datetime

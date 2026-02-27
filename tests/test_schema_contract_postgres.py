@@ -22,6 +22,20 @@ def test_pg_views_exist(pg_conn):
     assert "trading_calendar_v1" in names
 
 
+def test_pg_delisting_snapshot_table_exists(pg_conn):
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = current_schema()
+              AND table_name = 'instrument_delisting_snapshot'
+            """
+        )
+        rows = cur.fetchall()
+    assert len(rows) == 1
+
+
 def test_pg_daily_market_volume_constraint(pg_conn):
     instrument_id = str(uuid.uuid4())
     with pg_conn.cursor() as cur:

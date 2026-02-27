@@ -18,6 +18,7 @@ dependencies = [
 
 [project.scripts]
 collect-krx-data = "financial_data_collector.collect_krx_data:main"
+collect-kind-delistings = "financial_data_collector.collect_kind_delistings:main"
 
 [project.optional-dependencies]
 parquet = [

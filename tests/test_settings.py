@@ -28,3 +28,15 @@ def test_settings_validate_missing():
     )
     with pytest.raises(ValueError):
         s.validate()
+
+
+def test_from_env_requires_krx_auth_key(monkeypatch):
+    monkeypatch.delenv("KRX_AUTH_KEY", raising=False)
+    monkeypatch.setenv("KRX_OPENAPI_KEY", "legacy-key")
+    monkeypatch.setenv("KRX_DAILY_LIMIT", "100")
+
+    s = KRXSettings.from_env()
+
+    assert s.auth_key == ""
+    with pytest.raises(ValueError, match="KRX_AUTH_KEY"):
+        s.validate()

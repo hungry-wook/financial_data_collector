@@ -9,8 +9,13 @@ class BacktestExportAPI:
 
     def post_exports(self, body: Dict) -> Tuple[int, Dict]:
         try:
+            market_codes = body.get("market_codes")
+            if market_codes is None:
+                market_code = body.get("market_code")
+                if market_code:
+                    market_codes = [market_code]
             req = ExportRequest(
-                market_code=body["market_code"],
+                market_codes=market_codes,
                 index_codes=body["index_codes"],
                 series_names=body.get("series_names"),
                 date_from=body["date_from"],

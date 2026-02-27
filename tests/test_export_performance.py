@@ -32,6 +32,10 @@ def _business_days(start: date, days: int):
     return out
 
 
+def _perf_instrument_uuid(idx: int) -> str:
+    return f"00000000-0000-0000-0000-{idx:012d}"
+
+
 @pytest.mark.skipif(os.getenv("RUN_PERF_TESTS") != "1", reason="Set RUN_PERF_TESTS=1 to run performance tests")
 def test_export_performance_1y_kosdaq(repo, tmp_path):
     start = date(2025, 1, 2)
@@ -39,7 +43,7 @@ def test_export_performance_1y_kosdaq(repo, tmp_path):
 
     instruments = [
         {
-            "instrument_id": f"i{idx}",
+            "instrument_id": _perf_instrument_uuid(idx),
             "external_code": f"{idx:04d}",
             "market_code": "KOSDAQ",
             "instrument_name": f"inst-{idx}",
@@ -60,7 +64,7 @@ def test_export_performance_1y_kosdaq(repo, tmp_path):
             base = 100 + idx
             daily_rows.append(
                 {
-                    "instrument_id": f"i{idx}",
+                    "instrument_id": _perf_instrument_uuid(idx),
                     "trade_date": td_str,
                     "open": base,
                     "high": base + 2,
@@ -118,7 +122,7 @@ def test_export_performance_1y_kosdaq(repo, tmp_path):
     svc = ExportService(repo, writer=NullWriter())
     created = svc.create_job(
         ExportRequest(
-            market_code="KOSDAQ",
+            market_codes=["KOSDAQ"],
             index_codes=["KOSDAQ"],
             date_from=trade_days[0].isoformat(),
             date_to=trade_days[-1].isoformat(),

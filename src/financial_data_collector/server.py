@@ -6,6 +6,7 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from .api import BacktestExportAPI
@@ -19,7 +20,8 @@ export_service: ExportService | None = None
 
 
 class ExportRequestBody(BaseModel):
-    market_code: str
+    market_codes: list[str] | None = None
+    market_code: str | None = None
     index_codes: list[str]
     series_names: list[str] | None = None
     date_from: str
@@ -90,7 +92,7 @@ async def health_check():
         return {"status": "unhealthy", "db_backend": "postgresql", "error": str(exc)}
 
 
-@app.post("/api/v1/backtest/exports", status_code=202)
+@app.post("/api/v1/backtest/exports")
 async def create_export(request: ExportRequestBody, background_tasks: BackgroundTasks):
     api = get_api()
     status_code, response = api.post_exports(request.model_dump())
@@ -98,7 +100,10 @@ async def create_export(request: ExportRequestBody, background_tasks: Background
     if status_code == 202:
         background_tasks.add_task(run_export_job, response["job_id"])
 
-    return response
+    if status_code >= 400:
+        raise HTTPException(status_code=status_code, detail=response.get("error"))
+
+    return JSONResponse(content=response, status_code=status_code)
 
 
 @app.get("/api/v1/backtest/exports/{job_id}")

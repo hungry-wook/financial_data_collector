@@ -86,7 +86,7 @@ pytest留뚯쑝濡??꾩떆 而⑦뀒?대꼫 ?먮룞 ?ㅽ뻾:
 
 1. `.env` 준비
 - 최소 필요값: `KRX_AUTH_KEY`
-- 필요 시 PostgreSQL 값 수정: `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_PORT`
+- 필요 시 PostgreSQL 값 수정: `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`
 
 2. 실행
 ```bash
@@ -114,4 +114,63 @@ docker compose run --rm \
 6. 종료
 ```bash
 docker compose down
+```
+
+## Task Runner (just, Windows-friendly)
+
+`make` 대신 `just`를 사용해 서버/수집 명령을 통일합니다.
+
+1. 설치 (Windows 예시)
+```powershell
+choco install just
+# 또는
+scoop install just
+```
+
+2. 주요 명령
+```bash
+# 사용 가능한 명령 보기
+just
+
+# PostgreSQL + API + daily collector 시작
+just up
+
+# 상태/헬스 확인
+just ps
+just health
+
+# 기간 지정 1회 수집 (DATE_FROM DATE_TO 필수)
+just collect 2026-02-14 2026-02-21
+
+# 로그 확인
+just logs api
+
+# 종료
+just down
+```
+
+3. 로컬 실행 (보조)
+```bash
+# 로컬 API 실행
+just serve-local
+
+# 로컬 수집 실행 (DATE_FROM DATE_TO 필수)
+just collect-local 2026-02-20 2026-02-20
+```
+
+## Security Defaults (Compose)
+
+- PostgreSQL is not exposed to host ports by default.
+- API/collector access PostgreSQL only through the internal compose network (`postgres:5432`).
+- Use a strong `POSTGRES_PASSWORD` in `.env`.
+- If you change `POSTGRES_PASSWORD` after DB volume already exists, credentials are not re-initialized automatically.
+
+```bash
+# Development/Test only: reinitialize DB volume with current .env credentials
+just reset-db
+```
+
+```bash
+# Troubleshoot startup and health failures
+just doctor
 ```

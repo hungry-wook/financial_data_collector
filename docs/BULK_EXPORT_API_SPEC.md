@@ -19,8 +19,8 @@
 Request body:
 ```json
 {
-  "market_code": "KOSDAQ",
-  "index_codes": ["KOSDAQ"],
+  "market_codes": ["KOSDAQ", "KOSPI"],
+  "index_codes": ["KOSDAQ", "KOSPI"],
   "date_from": "2024-01-01",
   "date_to": "2024-12-31",
   "include_issues": true,
@@ -41,7 +41,7 @@ Response `202 Accepted`:
 Validation rules:
 1. `date_from <= date_to`
 2. `output_format` in `["parquet"]` for phase 1
-3. `market_code` required
+3. `market_codes` required (at least one)
 4. `index_codes` required (at least one)
 
 ## 3.2 Get Job Status
@@ -90,8 +90,8 @@ Response `200 OK`:
 ```json
 {
   "job_id": "2ab1f5e6-2a9f-4a14-9e7a-2d8f1f8ee451",
-  "market_code": "KOSDAQ",
-  "index_codes": ["KOSDAQ"],
+  "market_codes": ["KOSDAQ", "KOSPI"],
+  "index_codes": ["KOSDAQ", "KOSPI"],
   "date_from": "2024-01-01",
   "date_to": "2024-12-31",
   "schema_version": "phase1-v1",
@@ -154,7 +154,8 @@ Columns:
 
 Sort order:
 1. `trade_date ASC`
-2. `instrument_id ASC`
+2. `market_code ASC`
+3. `instrument_id ASC`
 
 ## 5.2 benchmark_daily.parquet
 Columns:
@@ -166,7 +167,8 @@ Columns:
 6. `close`
 
 Sort order:
-1. `trade_date ASC`
+1. `market_code ASC`
+2. `trade_date ASC`
 2. `index_code ASC`
 
 ## 5.3 trading_calendar.parquet
@@ -196,6 +198,10 @@ Columns:
 2. `benchmark_daily.parquet` -> `benchmark_dataset_v1`
 3. `trading_calendar.parquet` -> `trading_calendar_v1`
 4. `data_quality_issues.parquet` -> `data_quality_issues`
+
+Universe validity rule for `instrument_daily.parquet`:
+1. include only `listing_date <= trade_date`
+2. exclude delisting day itself: `trade_date < delisting_date` when `delisting_date` is not null
 
 ## 7. Failure and Idempotency
 1. Partial files must be written to temp path first.

@@ -16,6 +16,18 @@ def test_views_exist(repo):
     assert "trading_calendar_v1" in names
 
 
+def test_delisting_snapshot_table_exists(repo):
+    rows = repo.query(
+        """
+        SELECT table_name AS name
+        FROM information_schema.tables
+        WHERE table_schema = current_schema()
+          AND table_name = 'instrument_delisting_snapshot'
+        """
+    )
+    assert len(rows) == 1
+
+
 def test_daily_market_constraint_volume(repo):
     instrument_id = str(uuid.uuid4())
     repo.upsert_instruments(

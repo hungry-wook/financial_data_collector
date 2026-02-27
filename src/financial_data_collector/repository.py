@@ -8,6 +8,7 @@ from uuid import UUID
 import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
+from psycopg.types.json import Json
 
 
 class Repository:
@@ -36,12 +37,80 @@ class Repository:
             exists = conn.execute("SELECT to_regclass('instruments') AS table_name").fetchone()
             if not exists or not exists.get("table_name"):
                 conn.execute(ddl)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS instrument_delisting_snapshot (
+                    delisting_snapshot_id BIGSERIAL PRIMARY KEY,
+                    market_code VARCHAR(20) NOT NULL,
+                    external_code VARCHAR(20) NOT NULL,
+                    delisting_date DATE NOT NULL,
+                    delisting_reason TEXT NULL,
+                    note TEXT NULL,
+                    source_name VARCHAR(30) NOT NULL,
+                    collected_at TIMESTAMP NOT NULL,
+                    updated_at TIMESTAMP NULL,
+                    run_id UUID NULL,
+                    UNIQUE (market_code, external_code)
+                )
+                """
+            )
+            conn.execute(
+                """
+                ALTER TABLE instrument_delisting_snapshot
+                DROP CONSTRAINT IF EXISTS fk_instrument_delisting_snapshot_run
+                """
+            )
+            conn.execute(
+                """
+                ALTER TABLE instrument_delisting_snapshot
+                ADD CONSTRAINT fk_instrument_delisting_snapshot_run
+                FOREIGN KEY (run_id) REFERENCES collection_runs(run_id)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_delisting_snapshot_market_date
+                ON instrument_delisting_snapshot(market_code, delisting_date)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_delisting_snapshot_external_code
+                ON instrument_delisting_snapshot(external_code)
+                """
+            )
             conn.execute("ALTER TABLE collection_runs DROP CONSTRAINT IF EXISTS collection_runs_status_check")
             conn.execute(
                 """
                 ALTER TABLE collection_runs
                 ADD CONSTRAINT collection_runs_status_check
                 CHECK (status IN ('RUNNING', 'SUCCESS', 'PARTIAL', 'FAILED'))
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS export_jobs (
+                    job_id UUID PRIMARY KEY,
+                    status VARCHAR(20) NOT NULL,
+                    progress INTEGER NOT NULL DEFAULT 0,
+                    submitted_at TIMESTAMP NOT NULL,
+                    started_at TIMESTAMP NULL,
+                    finished_at TIMESTAMP NULL,
+                    output_path TEXT NULL,
+                    files JSONB NULL,
+                    row_counts JSONB NULL,
+                    error_code VARCHAR(50) NULL,
+                    error_message TEXT NULL,
+                    request_payload JSONB NOT NULL,
+                    CHECK (status IN ('PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED')),
+                    CHECK (progress >= 0 AND progress <= 100)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_export_jobs_status_submitted_at
+                ON export_jobs(status, submitted_at DESC)
                 """
             )
 
@@ -79,6 +148,56 @@ class Repository:
         query = sql.SQL("UPDATE collection_runs SET {} WHERE run_id = %s").format(assignments)
         with self.connect() as conn:
             conn.execute(query, [*fields.values(), run_id])
+
+    def insert_export_job(self, job: Dict) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO export_jobs(
+                    job_id, status, progress, submitted_at, started_at, finished_at,
+                    output_path, files, row_counts, error_code, error_message, request_payload
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    job["job_id"],
+                    job["status"],
+                    job.get("progress", 0),
+                    job["submitted_at"],
+                    job.get("started_at"),
+                    job.get("finished_at"),
+                    job.get("output_path"),
+                    Json(job["files"]) if "files" in job and job["files"] is not None else None,
+                    Json(job["row_counts"]) if "row_counts" in job and job["row_counts"] is not None else None,
+                    job.get("error_code"),
+                    job.get("error_message"),
+                    Json(job["request_payload"]),
+                ),
+            )
+
+    def update_export_job(self, job_id: str, fields: Dict) -> None:
+        if not fields:
+            return
+        adapted_fields = {
+            key: (Json(value) if isinstance(value, (dict, list)) else value) for key, value in fields.items()
+        }
+        assignments = sql.SQL(", ").join(
+            sql.SQL("{} = %s").format(sql.Identifier(k)) for k in adapted_fields.keys()
+        )
+        query = sql.SQL("UPDATE export_jobs SET {} WHERE job_id = %s").format(assignments)
+        with self.connect() as conn:
+            conn.execute(query, [*adapted_fields.values(), job_id])
+
+    def get_export_job(self, job_id: str) -> Optional[Dict]:
+        rows = self.query(
+            """
+            SELECT job_id, status, progress, submitted_at, started_at, finished_at,
+                   output_path, files, row_counts, error_code, error_message, request_payload
+            FROM export_jobs
+            WHERE job_id = %s
+            """,
+            (job_id,),
+        )
+        return rows[0] if rows else None
 
     def upsert_instruments(self, rows: Iterable[Dict]) -> None:
         payload = [
@@ -317,6 +436,155 @@ class Repository:
                     payload,
                 )
 
+    def bulk_update_delisting_dates(self, rows: Iterable[Dict], source_name: str, run_id: Optional[str] = None) -> Dict:
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        issues = []
+        matched = 0
+        updated = 0
+        unchanged = 0
+        unmatched = 0
+        invalid = 0
+
+        for row in rows:
+            market_code = str(row.get("market_code") or "").upper()
+            external_code = str(row.get("external_code") or "").strip()
+            delisting_date = row.get("delisting_date")
+
+            if not market_code or not external_code or not delisting_date:
+                invalid += 1
+                issues.append(
+                    {
+                        "dataset_name": "instruments",
+                        "trade_date": None,
+                        "instrument_id": None,
+                        "index_code": None,
+                        "issue_code": "DELISTING_ROW_INVALID",
+                        "severity": "ERROR",
+                        "issue_detail": f"market_code={market_code}, external_code={external_code}, delisting_date={delisting_date}",
+                        "source_name": source_name,
+                        "detected_at": now,
+                        "run_id": run_id,
+                        "resolved_at": None,
+                    }
+                )
+                continue
+
+            target = self.query(
+                """
+                SELECT instrument_id, listing_date, delisting_date
+                FROM instruments
+                WHERE market_code = %s AND external_code = %s
+                LIMIT 1
+                """,
+                (market_code, external_code),
+            )
+            if not target:
+                unmatched += 1
+                # Delisting feed can include historical symbols outside current master coverage.
+                continue
+
+            matched += 1
+            instrument_id = target[0]["instrument_id"]
+            listing_date = target[0]["listing_date"]
+            existing = target[0]["delisting_date"]
+
+            if listing_date and str(delisting_date) < str(listing_date):
+                invalid += 1
+                issues.append(
+                    {
+                        "dataset_name": "instruments",
+                        "trade_date": delisting_date,
+                        "instrument_id": instrument_id,
+                        "index_code": None,
+                        "issue_code": "DELISTING_DATE_BEFORE_LISTING_DATE",
+                        "severity": "ERROR",
+                        "issue_detail": f"listing_date={listing_date}, delisting_date={delisting_date}",
+                        "source_name": source_name,
+                        "detected_at": now,
+                        "run_id": run_id,
+                        "resolved_at": None,
+                    }
+                )
+                continue
+
+            if existing == delisting_date:
+                unchanged += 1
+                continue
+
+            with self.connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE instruments
+                    SET delisting_date = %s,
+                        source_name = %s,
+                        collected_at = %s,
+                        updated_at = %s
+                    WHERE instrument_id = %s
+                    """,
+                    (delisting_date, source_name, now, now, instrument_id),
+                )
+            updated += 1
+
+        if issues:
+            self.insert_issues(issues)
+
+        return {
+            "matched": matched,
+            "updated": updated,
+            "unchanged": unchanged,
+            "unmatched": unmatched,
+            "invalid": invalid,
+        }
+
+    def upsert_delisting_snapshot(self, rows: Iterable[Dict], source_name: str, run_id: Optional[str] = None) -> Dict:
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        payload = []
+        invalid = 0
+        for row in rows:
+            market_code = str(row.get("market_code") or "").upper().strip()
+            external_code = str(row.get("external_code") or "").strip()
+            delisting_date = row.get("delisting_date")
+            if not market_code or not external_code or not delisting_date:
+                invalid += 1
+                continue
+            payload.append(
+                (
+                    market_code,
+                    external_code,
+                    delisting_date,
+                    row.get("delisting_reason"),
+                    row.get("note"),
+                    source_name,
+                    row.get("collected_at") or now,
+                    now,
+                    run_id,
+                )
+            )
+        if not payload:
+            return {"upserted": 0, "invalid": invalid}
+
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO instrument_delisting_snapshot(
+                        market_code, external_code, delisting_date, delisting_reason, note,
+                        source_name, collected_at, updated_at, run_id
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT(market_code, external_code) DO UPDATE SET
+                        delisting_date = excluded.delisting_date,
+                        delisting_reason = excluded.delisting_reason,
+                        note = excluded.note,
+                        source_name = excluded.source_name,
+                        collected_at = excluded.collected_at,
+                        updated_at = excluded.updated_at,
+                        run_id = excluded.run_id
+                    """,
+                    payload,
+                )
+
+        return {"upserted": len(payload), "invalid": invalid}
+
     def query(self, query_text: str, params: tuple = ()) -> List[Dict]:
         if "?" in query_text and "%s" not in query_text:
             query_text = query_text.replace("?", "%s")
@@ -337,16 +605,51 @@ class Repository:
                 out.append(normalized)
             return out
 
-    def get_core_market(self, market_code: str, date_from: str, date_to: str) -> List[Dict]:
+    def get_core_market(self, market_codes: Iterable[str], date_from: str, date_to: str) -> List[Dict]:
+        codes = [str(c).upper() for c in market_codes if str(c).strip()]
+        if not codes:
+            return []
+        placeholders = ", ".join(["%s"] * len(codes))
         return self.query(
-            """
+            f"""
             SELECT *
             FROM core_market_dataset_v1
-            WHERE market_code = %s
+            WHERE market_code IN ({placeholders})
               AND trade_date BETWEEN %s AND %s
-            ORDER BY trade_date, instrument_id
+              AND trade_date >= listing_date
+              AND (delisting_date IS NULL OR trade_date < delisting_date)
+            ORDER BY trade_date, market_code, instrument_id
             """,
-            (market_code, date_from, date_to),
+            tuple(codes + [date_from, date_to]),
+        )
+
+    def get_signal_market(
+        self,
+        market_codes: Iterable[str],
+        date_from: str,
+        date_to: str,
+        require_positive_volume: bool = False,
+    ) -> List[Dict]:
+        codes = [str(c).upper() for c in market_codes if str(c).strip()]
+        if not codes:
+            return []
+        placeholders = ", ".join(["%s"] * len(codes))
+        volume_clause = "AND volume > 0" if require_positive_volume else ""
+        return self.query(
+            f"""
+            SELECT *
+            FROM core_market_dataset_v1
+            WHERE market_code IN ({placeholders})
+              AND trade_date BETWEEN %s AND %s
+              AND trade_date >= listing_date
+              AND (delisting_date IS NULL OR trade_date < delisting_date)
+              AND record_status = 'VALID'
+              AND is_trade_halted = FALSE
+              AND is_under_supervision = FALSE
+              {volume_clause}
+            ORDER BY trade_date, market_code, instrument_id
+            """,
+            tuple(codes + [date_from, date_to]),
         )
 
     def get_benchmark(
@@ -368,6 +671,8 @@ class Repository:
                 series_placeholders = ", ".join(["%s"] * len(names))
                 where_series = f" AND index_name IN ({series_placeholders})"
                 params.extend(names)
+        else:
+            where_series = " AND index_name = index_code"
         return self.query(
             f"""
             SELECT index_code, index_name, trade_date, open, high, low, close, record_status
@@ -380,16 +685,20 @@ class Repository:
             tuple(params),
         )
 
-    def get_calendar(self, market_code: str, date_from: str, date_to: str) -> List[Dict]:
+    def get_calendar(self, market_codes: Iterable[str], date_from: str, date_to: str) -> List[Dict]:
+        codes = [str(c).upper() for c in market_codes if str(c).strip()]
+        if not codes:
+            return []
+        placeholders = ", ".join(["%s"] * len(codes))
         return self.query(
-            """
+            f"""
             SELECT market_code, trade_date, is_open, holiday_name
             FROM trading_calendar_v1
-            WHERE market_code = %s
+            WHERE market_code IN ({placeholders})
               AND trade_date BETWEEN %s AND %s
-            ORDER BY trade_date
+            ORDER BY market_code, trade_date
             """,
-            (market_code, date_from, date_to),
+            tuple(codes + [date_from, date_to]),
         )
 
     def get_issues(self, date_from: str, date_to: str) -> List[Dict]:
