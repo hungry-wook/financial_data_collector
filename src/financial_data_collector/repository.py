@@ -12,6 +12,11 @@ from psycopg.types.json import Json
 
 
 class Repository:
+    DEFAULT_BENCHMARK_SERIES_CANDIDATES = {
+        "KOSDAQ": ["KOSDAQ", "코스닥"],
+        "KOSPI": ["KOSPI", "코스피"],
+    }
+
     def __init__(self, database_url: str, schema: Optional[str] = None):
         self.database_url = database_url
         self.schema = schema
@@ -77,6 +82,18 @@ class Repository:
                 """
                 CREATE INDEX IF NOT EXISTS idx_delisting_snapshot_external_code
                 ON instrument_delisting_snapshot(external_code)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_instruments_external_code
+                ON instruments(external_code)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_instruments_name
+                ON instruments(instrument_name)
                 """
             )
             conn.execute("ALTER TABLE collection_runs DROP CONSTRAINT IF EXISTS collection_runs_status_check")
@@ -665,14 +682,25 @@ class Repository:
         code_placeholders = ", ".join(["%s"] * len(codes))
         params: List = list(codes) + [date_from, date_to]
         where_series = ""
-        if series_names:
-            names = [n for n in series_names if n]
-            if names:
-                series_placeholders = ", ".join(["%s"] * len(names))
-                where_series = f" AND index_name IN ({series_placeholders})"
-                params.extend(names)
+        names = [str(name).strip() for name in (series_names or []) if str(name).strip()]
+        if names:
+            series_placeholders = ", ".join(["%s"] * len(names))
+            where_series = f" AND index_name IN ({series_placeholders})"
+            params.extend(names)
         else:
-            where_series = " AND index_name = index_code"
+            default_series = self.get_default_benchmark_series_map(codes)
+            if not default_series:
+                return []
+            pair_filters = []
+            for code in codes:
+                default_name = default_series.get(code)
+                if not default_name:
+                    continue
+                pair_filters.append("(index_code = %s AND index_name = %s)")
+                params.extend([code, default_name])
+            if not pair_filters:
+                return []
+            where_series = f" AND ({' OR '.join(pair_filters)})"
         return self.query(
             f"""
             SELECT index_code, index_name, trade_date, open, high, low, close, record_status
@@ -684,6 +712,83 @@ class Repository:
             """,
             tuple(params),
         )
+
+    def get_default_benchmark_series(self, index_code: str) -> Optional[str]:
+        preferred_names = self.DEFAULT_BENCHMARK_SERIES_CANDIDATES.get(str(index_code).strip().upper(), [])
+        rows = self.query(
+            """
+            SELECT index_name
+            FROM (
+                SELECT DISTINCT index_code, index_name
+                FROM benchmark_dataset_v1
+                WHERE index_code = %s
+            ) series
+            ORDER BY CASE
+                WHEN index_name = %s THEN 0
+                WHEN index_name = %s THEN 1
+                WHEN index_name = index_code THEN 2
+                ELSE 3
+            END,
+            index_name
+            LIMIT 1
+            """,
+            (
+                index_code,
+                preferred_names[0] if len(preferred_names) > 0 else "",
+                preferred_names[1] if len(preferred_names) > 1 else "",
+            ),
+        )
+        return rows[0]["index_name"] if rows else None
+
+    def get_default_benchmark_series_map(self, index_codes: Iterable[str]) -> Dict[str, str]:
+        codes = [str(code).strip() for code in index_codes if str(code).strip()]
+        if not codes:
+            return {}
+        placeholders = ", ".join(["%s"] * len(codes))
+        candidate_order = []
+        for code in codes:
+            for rank, name in enumerate(self.DEFAULT_BENCHMARK_SERIES_CANDIDATES.get(code.upper(), [])):
+                candidate_order.append((code, name, rank))
+        candidate_values_sql = ", ".join(["(%s, %s, %s)"] * len(candidate_order)) if candidate_order else ""
+        preferred_join = (
+            f"""
+                LEFT JOIN (
+                    VALUES {candidate_values_sql}
+                ) AS preferred(index_code, index_name, preferred_rank)
+                  ON preferred.index_code = series.index_code
+                 AND preferred.index_name = series.index_name
+            """
+            if candidate_order
+            else ""
+        )
+        preferred_params: List = []
+        for code, name, rank in candidate_order:
+            preferred_params.extend([code, name, rank])
+        rows = self.query(
+            f"""
+            SELECT index_code, index_name
+            FROM (
+                SELECT series.index_code,
+                       series.index_name,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY series.index_code
+                           ORDER BY COALESCE(preferred.preferred_rank,
+                                             CASE WHEN series.index_name = series.index_code THEN 2 ELSE 3 END),
+                                    series.index_name
+                       ) AS rn
+                FROM (
+                    SELECT DISTINCT index_code, index_name
+                    FROM benchmark_dataset_v1
+                    WHERE index_code IN ({placeholders})
+                ) series
+                {preferred_join}
+            ) ranked
+            WHERE rn = 1
+            ORDER BY index_code
+            """,
+            tuple(codes + preferred_params),
+        )
+        return {row["index_code"]: row["index_name"] for row in rows}
 
     def get_calendar(self, market_codes: Iterable[str], date_from: str, date_to: str) -> List[Dict]:
         codes = [str(c).upper() for c in market_codes if str(c).strip()]
@@ -729,4 +834,7 @@ class Repository:
                 (resolved_time,),
             )
             return int(cur.rowcount or 0)
+
+
+
 

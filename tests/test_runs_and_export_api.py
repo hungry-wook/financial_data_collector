@@ -571,3 +571,237 @@ def test_export_service_prevents_benchmark_series_mixing_by_default(repo, tmp_pa
     svc.run_job(created_series["job_id"])
     series_rows = json.loads((tmp_path / "out_series" / "benchmark_daily.parquet").read_text(encoding="utf-8"))
     assert [r["index_name"] for r in series_rows] == ["KOSDAQ_LEGACY"]
+
+
+def test_export_service_defaults_to_first_available_benchmark_series(repo, tmp_path):
+    InstrumentCollector(repo).collect(
+        [
+            {
+                "instrument_id": "i_default_series",
+                "external_code": "0099",
+                "market_code": "KOSDAQ",
+                "instrument_name": "Default Series",
+                "listing_date": date(2020, 1, 1),
+            }
+        ],
+        "krx",
+    )
+    DailyMarketCollector(repo).collect(
+        [
+            {
+                "instrument_id": "i_default_series",
+                "trade_date": date(2026, 1, 2),
+                "open": 10,
+                "high": 11,
+                "low": 9,
+                "close": 10.5,
+                "volume": 100,
+                "turnover_value": 1000,
+                "market_value": 5000,
+            }
+        ],
+        "krx",
+        "r1",
+    )
+    repo.upsert_trading_calendar(
+        [
+            {
+                "market_code": "KOSDAQ",
+                "trade_date": "2026-01-02",
+                "is_open": True,
+                "holiday_name": None,
+                "source_name": "krx",
+                "collected_at": "2026-01-02T00:00:00",
+                "run_id": None,
+            }
+        ]
+    )
+    BenchmarkCollector(repo).collect(
+        [
+            {
+                "index_code": "KOSDAQ",
+                "index_name": "KOSDAQ_PRIMARY",
+                "trade_date": date(2026, 1, 2),
+                "open": 100,
+                "high": 101,
+                "low": 99,
+                "close": 100.5,
+            }
+        ],
+        "krx",
+        "r1",
+    )
+
+    svc = ExportService(repo, writer=FakeParquetWriter())
+    created = svc.create_job(
+        ExportRequest(
+            market_codes=["KOSDAQ"],
+            index_codes=["KOSDAQ"],
+            date_from="2026-01-01",
+            date_to="2026-01-03",
+            include_issues=False,
+            output_format="parquet",
+            output_path=(tmp_path / "out_first_series").as_posix(),
+        )
+    )
+    svc.run_job(created["job_id"])
+
+    rows = json.loads((tmp_path / "out_first_series" / "benchmark_daily.parquet").read_text(encoding="utf-8"))
+    assert len(rows) == 1
+    assert rows[0]["index_name"] == "KOSDAQ_PRIMARY"
+
+
+def test_api_manifest_returns_200_for_succeeded_job(repo, tmp_path):
+    _seed_data(repo)
+    service = ExportService(repo, writer=FakeParquetWriter())
+    api = BacktestExportAPI(service)
+    created = service.create_job(
+        ExportRequest(
+            market_codes=["KOSDAQ"],
+            index_codes=["KOSDAQ"],
+            date_from="2026-01-01",
+            date_to="2026-01-03",
+            include_issues=False,
+            output_format="parquet",
+            output_path=(tmp_path / "manifest_ok").as_posix(),
+        )
+    )
+    service.run_job(created["job_id"])
+
+    status, payload = api.get_manifest(created["job_id"])
+
+    assert status == 200
+    assert payload["job_id"] == created["job_id"]
+
+
+def test_api_manifest_returns_404_when_manifest_file_is_missing(repo, tmp_path):
+    _seed_data(repo)
+    service = ExportService(repo, writer=FakeParquetWriter())
+    api = BacktestExportAPI(service)
+    created = service.create_job(
+        ExportRequest(
+            market_codes=["KOSDAQ"],
+            index_codes=["KOSDAQ"],
+            date_from="2026-01-01",
+            date_to="2026-01-03",
+            include_issues=False,
+            output_format="parquet",
+            output_path=(tmp_path / "manifest_missing").as_posix(),
+        )
+    )
+    service.run_job(created["job_id"])
+    (tmp_path / "manifest_missing" / "manifest.json").unlink()
+
+    status, payload = api.get_manifest(created["job_id"])
+
+    assert status == 404
+    assert "Manifest not found" in payload["error"]
+
+
+def test_api_manifest_returns_409_before_job_success(repo, tmp_path):
+    service = ExportService(repo, writer=FakeParquetWriter())
+    api = BacktestExportAPI(service)
+    created = service.create_job(
+        ExportRequest(
+            market_codes=["KOSDAQ"],
+            index_codes=["KOSDAQ"],
+            date_from="2026-01-01",
+            date_to="2026-01-03",
+            include_issues=False,
+            output_format="parquet",
+            output_path=(tmp_path / "manifest_pending").as_posix(),
+        )
+    )
+
+    status, payload = api.get_manifest(created["job_id"])
+
+    assert status == 409
+    assert "only after success" in payload["error"]
+
+
+
+def test_export_service_prefers_representative_benchmark_series(repo, tmp_path):
+    InstrumentCollector(repo).collect(
+        [
+            {
+                "instrument_id": "i_rep_series",
+                "external_code": "0100",
+                "market_code": "KOSDAQ",
+                "instrument_name": "Representative Series",
+                "listing_date": date(2020, 1, 1),
+            }
+        ],
+        "krx",
+    )
+    DailyMarketCollector(repo).collect(
+        [
+            {
+                "instrument_id": "i_rep_series",
+                "trade_date": date(2026, 1, 2),
+                "open": 10,
+                "high": 11,
+                "low": 9,
+                "close": 10.5,
+                "volume": 100,
+                "turnover_value": 1000,
+                "market_value": 5000,
+            }
+        ],
+        "krx",
+        "r1",
+    )
+    repo.upsert_trading_calendar(
+        [
+            {
+                "market_code": "KOSDAQ",
+                "trade_date": "2026-01-02",
+                "is_open": True,
+                "holiday_name": None,
+                "source_name": "krx",
+                "collected_at": "2026-01-02T00:00:00",
+                "run_id": None,
+            }
+        ]
+    )
+    BenchmarkCollector(repo).collect(
+        [
+            {
+                "index_code": "KOSDAQ",
+                "index_name": "건설",
+                "trade_date": date(2026, 1, 2),
+                "open": 100,
+                "high": 101,
+                "low": 99,
+                "close": 100.5,
+            },
+            {
+                "index_code": "KOSDAQ",
+                "index_name": "코스닥",
+                "trade_date": date(2026, 1, 2),
+                "open": 1100,
+                "high": 1101,
+                "low": 1099,
+                "close": 1100.5,
+            }
+        ],
+        "krx",
+        "r1",
+    )
+
+    svc = ExportService(repo, writer=FakeParquetWriter())
+    created = svc.create_job(
+        ExportRequest(
+            market_codes=["KOSDAQ"],
+            index_codes=["KOSDAQ"],
+            date_from="2026-01-01",
+            date_to="2026-01-03",
+            include_issues=False,
+            output_format="parquet",
+            output_path=(tmp_path / "out_representative").as_posix(),
+        )
+    )
+    svc.run_job(created["job_id"])
+
+    rows = json.loads((tmp_path / "out_representative" / "benchmark_daily.parquet").read_text(encoding="utf-8"))
+    assert len(rows) == 1
+    assert rows[0]["index_name"] == "코스닥"

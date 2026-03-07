@@ -1,6 +1,6 @@
 from typing import Dict, Tuple
 
-from .export_service import ExportRequest, ExportService
+from .export_service import ExportRequest, ExportService, ManifestUnavailableError
 
 
 class BacktestExportAPI:
@@ -40,3 +40,9 @@ class BacktestExportAPI:
             return 200, self.service.get_manifest(job_id)
         except KeyError as exc:
             return 404, {"error": str(exc)}
+        except FileNotFoundError as exc:
+            return 404, {"error": str(exc)}
+        except ManifestUnavailableError as exc:
+            return 409, {"error": str(exc)}
+
+

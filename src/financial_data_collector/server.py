@@ -1,4 +1,4 @@
-﻿"""
+"""
 FastAPI server for Backtest Export API
 Run with: uvicorn financial_data_collector.server:app --host 0.0.0.0 --port 8000
 """
@@ -122,8 +122,8 @@ async def get_manifest(job_id: str):
     api = get_api()
     status_code, response = api.get_manifest(job_id)
 
-    if status_code == 404:
-        raise HTTPException(status_code=404, detail=response.get("error"))
+    if status_code in {404, 409}:
+        raise HTTPException(status_code=status_code, detail=response.get("error"))
 
     return response
 
@@ -132,3 +132,4 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
+

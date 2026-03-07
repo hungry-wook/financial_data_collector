@@ -10,6 +10,10 @@ from .parquet_writer import ParquetWriter
 from .repository import Repository
 
 
+class ManifestUnavailableError(RuntimeError):
+    pass
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -147,11 +151,21 @@ class ExportService:
     def get_manifest(self, job_id: str) -> Dict:
         job = self._get_job(job_id)
         if job.get("status") != "SUCCEEDED":
-            raise KeyError("Manifest is available only after success")
-        manifest_path = Path(job["output_path"]) / "manifest.json"
+            raise ManifestUnavailableError("Manifest is available only after success")
+        output_path = str(job.get("output_path") or "").strip()
+        if not output_path:
+            raise ManifestUnavailableError(f"Export job {job_id} is missing output_path")
+        manifest_path = Path(output_path) / "manifest.json"
+        if not manifest_path.exists():
+            raise FileNotFoundError(f"Manifest not found for job_id={job_id}")
+
         import json
 
-        return json.loads(manifest_path.read_text(encoding="utf-8"))
+        try:
+            return json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            print(f"Manifest decode failed for {job_id}: {exc}")
+            raise ManifestUnavailableError(f"Manifest is invalid for job_id={job_id}") from exc
 
     def _get_job(self, job_id: str) -> Dict:
         job = self.repo.get_export_job(job_id)
@@ -180,3 +194,5 @@ class ExportService:
         req.market_codes = normalized_markets
         if not req.index_codes:
             raise ValueError("index_codes is required")
+
+
