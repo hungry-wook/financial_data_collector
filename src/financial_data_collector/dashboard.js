@@ -25,13 +25,6 @@ const dashboardApi = {
   },
 };
 
-function formatDateInput(date) {
-  const yyyy = date.getFullYear();
-  const mm = String(date.getMonth() + 1).padStart(2, "0");
-  const dd = String(date.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
-
 function toNumber(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
@@ -55,6 +48,16 @@ function formatCompactBusinessDay(time) {
   const day = Number(time.day);
   if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return "";
   return `${String(year).padStart(4, "0")}${String(month).padStart(2, "0")}${String(day).padStart(2, "0")}`;
+}
+
+function parseCompactBusinessDay(value) {
+  const text = String(value || "").trim();
+  if (!/^\d{8}$/.test(text)) return null;
+  const year = Number(text.slice(0, 4));
+  const month = Number(text.slice(4, 6));
+  const day = Number(text.slice(6, 8));
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return null;
+  return { year, month, day };
 }
 
 function isChartPointInside(param) {
@@ -114,6 +117,16 @@ function toVolumeCandlePoint(row, upColor) {
   };
 }
 
+function toVolumeHistogramPoint(row, upColor) {
+  const value = Number.isFinite(row?.volume) ? row.volume : 0;
+  const isUp = row?.close >= row?.open;
+  return {
+    time: row.time,
+    value,
+    color: isUp ? upColor : BEAR_VOLUME_COLOR,
+  };
+}
+
 function dashboard() {
   return {
     tabs: [
@@ -130,13 +143,20 @@ function dashboard() {
 
     instrumentQuery: "",
     instrumentOptions: [],
+    instrumentTotal: null,
+    instrumentLimit: 20,
+    instrumentOffset: 0,
+    instrumentHasMore: false,
     selectedInstrument: null,
     instrumentProfile: null,
     optionLoading: false,
+    _instrumentSearchTimer: null,
 
     prices: [],
-    priceFrom: "",
-    priceTo: "",
+    priceTotal: null,
+    priceLimit: 300,
+    priceOffset: 0,
+    priceHasMore: false,
     priceLoading: false,
     priceQueried: false,
     _priceChartCtx: null,
@@ -150,6 +170,10 @@ function dashboard() {
     instrumentBenchIndexCode: "",
     instrumentBenchSeriesName: "",
     instrumentBenchSeriesOptions: [],
+    instrumentBenchTotal: null,
+    instrumentBenchLimit: 300,
+    instrumentBenchOffset: 0,
+    instrumentBenchHasMore: false,
     _instrumentBenchChartCtx: null,
     _instrumentBenchRequestSeq: 0,
     _instrumentChartSyncGuard: false,
@@ -181,7 +205,6 @@ function dashboard() {
     qualityLoading: false,
 
     async init() {
-      this.applyRecentMonths(6);
       this.loadMASettings();
       await Promise.all([this.loadSummary(), this.loadRuns(), this.loadBenchmarks()]);
       this.lastRefresh = new Date().toLocaleTimeString("ko-KR");
@@ -197,14 +220,6 @@ function dashboard() {
         this.loadQualityIssues();
       }
       this.$nextTick(() => this.resizeCharts());
-    },
-
-    applyRecentMonths(months) {
-      const to = new Date();
-      const from = new Date();
-      from.setMonth(from.getMonth() - months);
-      this.priceFrom = formatDateInput(from);
-      this.priceTo = formatDateInput(to);
     },
 
     loadMASettings() {
@@ -301,7 +316,6 @@ function dashboard() {
     refreshAllCharts() {
       if (this.prices.length > 0) this.renderPriceChart();
       if (this.benchSeries.length > 0) this.renderBenchChart();
-      if (this.showInstrumentBench && this.instrumentBenchSeries.length > 0) this.renderInstrumentBenchChart();
     },
 
     _clearInstrumentChartSync() {
@@ -328,31 +342,119 @@ function dashboard() {
       const srcTs = src.timeScale();
       const dstTs = dst.timeScale();
       if (!srcTs || !dstTs) return;
-      if (typeof srcTs.subscribeVisibleLogicalRangeChange !== "function") return;
-      if (typeof dstTs.subscribeVisibleLogicalRangeChange !== "function") return;
-      if (typeof srcTs.setVisibleLogicalRange !== "function") return;
-      if (typeof dstTs.setVisibleLogicalRange !== "function") return;
 
-      const bindOneWay = (fromTs, toTs) => {
+      const canSyncByTimeRange =
+        typeof srcTs.subscribeVisibleTimeRangeChange === "function" &&
+        typeof dstTs.subscribeVisibleTimeRangeChange === "function" &&
+        typeof srcTs.setVisibleRange === "function" &&
+        typeof dstTs.setVisibleRange === "function";
+      const canSyncByLogicalRange =
+        typeof srcTs.subscribeVisibleLogicalRangeChange === "function" &&
+        typeof dstTs.subscribeVisibleLogicalRangeChange === "function" &&
+        typeof srcTs.setVisibleLogicalRange === "function" &&
+        typeof dstTs.setVisibleLogicalRange === "function";
+      if (!canSyncByTimeRange && !canSyncByLogicalRange) return;
+
+      const bindOneWay = (fromTs, toTs, mode) => {
         const handler = (range) => {
           if (!range) return;
           if (this._instrumentChartSyncGuard) return;
           this._instrumentChartSyncGuard = true;
           try {
-            toTs.setVisibleLogicalRange(range);
+            if (mode === "time") toTs.setVisibleRange(range);
+            else toTs.setVisibleLogicalRange(range);
           } catch (_) {
           } finally {
             this._instrumentChartSyncGuard = false;
           }
         };
-        fromTs.subscribeVisibleLogicalRangeChange(handler);
+        if (mode === "time") fromTs.subscribeVisibleTimeRangeChange(handler);
+        else fromTs.subscribeVisibleLogicalRangeChange(handler);
         return () => {
-          fromTs.unsubscribeVisibleLogicalRangeChange(handler);
+          if (mode === "time") fromTs.unsubscribeVisibleTimeRangeChange(handler);
+          else fromTs.unsubscribeVisibleLogicalRangeChange(handler);
         };
       };
 
-      this._instrumentTimeSyncUnsubs.push(bindOneWay(srcTs, dstTs));
-      this._instrumentTimeSyncUnsubs.push(bindOneWay(dstTs, srcTs));
+      if (canSyncByTimeRange) {
+        this._instrumentTimeSyncUnsubs.push(bindOneWay(srcTs, dstTs, "time"));
+        this._instrumentTimeSyncUnsubs.push(bindOneWay(dstTs, srcTs, "time"));
+        return;
+      }
+      this._instrumentTimeSyncUnsubs.push(bindOneWay(srcTs, dstTs, "logical"));
+      this._instrumentTimeSyncUnsubs.push(bindOneWay(dstTs, srcTs, "logical"));
+    },
+
+    _syncInstrumentBenchRangeFromPrice() {
+      const src = this._priceChartCtx?.chart;
+      const dst = this._instrumentBenchChartCtx?.chart;
+      if (!src || !dst || !src.timeScale || !dst.timeScale) return;
+      const srcTs = src.timeScale();
+      const dstTs = dst.timeScale();
+      if (!srcTs || !dstTs) return;
+
+      if (typeof srcTs.getVisibleRange === "function" && typeof dstTs.setVisibleRange === "function") {
+        const visibleRange = srcTs.getVisibleRange();
+        if (visibleRange) {
+          try {
+            dstTs.setVisibleRange(visibleRange);
+            return;
+          } catch (_) {}
+        }
+      }
+
+      if (typeof srcTs.getVisibleLogicalRange !== "function" || typeof dstTs.setVisibleLogicalRange !== "function") return;
+      const logicalRange = srcTs.getVisibleLogicalRange();
+      if (!logicalRange) return;
+      try {
+        dstTs.setVisibleLogicalRange(logicalRange);
+      } catch (_) {}
+    },
+
+    _alignInstrumentChartsTimeline() {
+      const priceCtx = this._priceChartCtx;
+      const benchCtx = this._instrumentBenchChartCtx;
+      if (!priceCtx?.candles || !priceCtx?.volume || !benchCtx?.candles || !benchCtx?.volume) return;
+
+      const priceRows = Array.isArray(priceCtx.baseRows) ? priceCtx.baseRows : [];
+      const benchRows = Array.isArray(benchCtx.baseRows) ? benchCtx.baseRows : [];
+      if (priceRows.length === 0 || benchRows.length === 0) return;
+
+      const keys = Array.from(
+        new Set(
+          priceRows
+            .concat(benchRows)
+            .map((row) => formatCompactBusinessDay(row?.time))
+            .filter(Boolean)
+        )
+      ).sort();
+      if (keys.length === 0) return;
+
+      const alignRows = (rows) => {
+        const map = new Map(rows.map((row) => [formatCompactBusinessDay(row.time), row]));
+        return keys
+          .map((key) => {
+            const row = map.get(key);
+            if (row) return row;
+            const time = parseCompactBusinessDay(key);
+            return time ? { time } : null;
+          })
+          .filter(Boolean);
+      };
+
+      const toCandleData = (rows) => rows.map((r) => (r.open == null ? { time: r.time } : { time: r.time, open: r.open, high: r.high, low: r.low, close: r.close }));
+      const toVolumeData = (rows) => rows.map((r) => (r.open == null ? { time: r.time } : toVolumeCandlePoint(r, BULL_VOLUME_COLOR)));
+
+      const alignedPriceRows = alignRows(priceRows);
+      const alignedBenchRows = alignRows(benchRows);
+
+      priceCtx.candles.setData(toCandleData(alignedPriceRows));
+      priceCtx.volume.setData(toVolumeData(alignedPriceRows));
+      benchCtx.candles.setData(toCandleData(alignedBenchRows));
+      benchCtx.volume.setData(toVolumeData(alignedBenchRows));
+
+      priceCtx.timeKeyMap = new Map(priceRows.map((row) => [formatCompactBusinessDay(row.time), row]));
+      benchCtx.timeKeyMap = new Map(benchRows.map((row) => [formatCompactBusinessDay(row.time), row]));
     },
 
     _wireInstrumentCrosshairSync() {
@@ -396,23 +498,41 @@ function dashboard() {
       this._instrumentCrosshairSyncUnsubs.push(bindOneWay(targetCtx, sourceCtx));
     },
 
+    _syncInstrumentChartScaleWidth() {
+      const priceChart = this._priceChartCtx?.chart;
+      const benchChart = this._instrumentBenchChartCtx?.chart;
+      if (!priceChart || !benchChart) return;
+
+      const readWidth = (chart) => {
+        try {
+          const scale = chart.priceScale("right");
+          const width = typeof scale?.width === "function" ? Number(scale.width()) : NaN;
+          return Number.isFinite(width) && width > 0 ? width : PRICE_SCALE_MIN_WIDTH;
+        } catch (_) {
+          return PRICE_SCALE_MIN_WIDTH;
+        }
+      };
+
+      const syncedWidth = Math.max(readWidth(priceChart), readWidth(benchChart), PRICE_SCALE_MIN_WIDTH);
+      priceChart.applyOptions({ rightPriceScale: { minimumWidth: syncedWidth } });
+      benchChart.applyOptions({ rightPriceScale: { minimumWidth: syncedWidth } });
+    },
+
     _rewireInstrumentChartSyncIfReady() {
       this._clearInstrumentChartSync();
       if (!this.showInstrumentBench) return;
       if (!this._priceChartCtx || !this._instrumentBenchChartCtx) return;
+      this._alignInstrumentChartsTimeline();
+      this._syncInstrumentChartScaleWidth();
       this._wireInstrumentTimeSync();
       this._wireInstrumentCrosshairSync();
+      this._syncInstrumentBenchRangeFromPrice();
     },
 
-    _createChartContext(containerId) {
-      const container = document.getElementById(containerId);
-      if (!(container instanceof HTMLDivElement) || !window.LightweightCharts) return null;
-      const { createChart } = window.LightweightCharts;
-      const width = Math.max(container.clientWidth || 0, 320);
-      const height = Math.max(container.clientHeight || 0, 320);
-      const chart = createChart(container, {
-        width,
-        height,
+    _createChartOptions(container) {
+      return {
+        width: Math.max(container.clientWidth || 0, 320),
+        height: Math.max(container.clientHeight || 0, 320),
         layout: {
           background: { color: "#ffffff" },
           textColor: "#334155",
@@ -423,7 +543,6 @@ function dashboard() {
         },
         timeScale: {
           borderColor: "#cbd5e1",
-          // Daily (BusinessDay) candles should render date labels, not 00:00 time labels.
           timeVisible: false,
           secondsVisible: false,
           tickMarkFormatter: (time) => formatCompactBusinessDay(time),
@@ -435,10 +554,16 @@ function dashboard() {
         },
         localization: {
           locale: "ko-KR",
-          // Keep crosshair/date labels consistent with x-axis tick labels.
           timeFormatter: (time) => formatCompactBusinessDay(time),
         },
-      });
+      };
+    },
+
+    _createChartContext(containerId) {
+      const container = document.getElementById(containerId);
+      if (!(container instanceof HTMLDivElement) || !window.LightweightCharts) return null;
+      const { createChart } = window.LightweightCharts;
+      const chart = createChart(container, this._createChartOptions(container));
 
       const candles = this._addCandlestickSeries(chart, {
         upColor: BULL_COLOR,
@@ -480,30 +605,174 @@ function dashboard() {
       };
     },
 
-    _addCandlestickSeries(chart, options) {
-      const lw = window.LightweightCharts || {};
-      if (typeof chart.addCandlestickSeries === "function") {
-        return chart.addCandlestickSeries(options);
+    _syncCombinedInstrumentPaneHeights() {
+      if (!this.showInstrumentBench || this.instrumentBenchSeries.length === 0) return;
+      const chart = this._priceChartCtx?.chart;
+      const container = this._priceChartCtx?.container;
+      if (!chart || !container || typeof chart.panes !== "function") return;
+      const panes = chart.panes();
+      const totalHeight = Math.max(container.clientHeight || 0, 320);
+      if (typeof panes?.[0]?.setHeight === "function") panes[0].setHeight(Math.round(totalHeight * 0.58));
+      if (typeof panes?.[1]?.setHeight === "function") panes[1].setHeight(Math.round(totalHeight * 0.42));
+    },
+    _createCombinedInstrumentChartContext(containerId) {
+      const container = document.getElementById(containerId);
+      if (!(container instanceof HTMLDivElement) || !window.LightweightCharts) return null;
+      const { createChart } = window.LightweightCharts;
+      const chart = createChart(container, this._createChartOptions(container));
+
+      const candles = this._addCandlestickSeries(chart, {
+        upColor: BULL_COLOR,
+        downColor: BEAR_COLOR,
+        borderVisible: true,
+        borderUpColor: BULL_COLOR,
+        borderDownColor: BEAR_COLOR,
+        wickUpColor: BULL_COLOR,
+        wickDownColor: BEAR_COLOR,
+      }, 0);
+      const volume = this._addVolumeSeries(chart, {
+        priceScaleId: "volume",
+        priceFormat: { type: "volume" },
+        wickVisible: false,
+        borderVisible: false,
+        base: 0,
+      }, 0);
+      const benchCandles = this._addCandlestickSeries(chart, {
+        upColor: BULL_COLOR,
+        downColor: BEAR_COLOR,
+        borderVisible: true,
+        borderUpColor: BULL_COLOR,
+        borderDownColor: BEAR_COLOR,
+        wickUpColor: BULL_COLOR,
+        wickDownColor: BEAR_COLOR,
+      }, 1);
+      const benchVolume = this._addHistogramSeries(chart, {
+        priceScaleId: "bench-volume",
+        priceFormat: { type: "volume" },
+        priceLineVisible: false,
+        lastValueVisible: false,
+      }, 1);
+      if (!candles || !volume || !benchCandles || !benchVolume) {
+        chart.remove();
+        return null;
       }
-      if (typeof chart.addSeries === "function" && lw.CandlestickSeries) {
-        return chart.addSeries(lw.CandlestickSeries, options);
+      chart.priceScale("volume").applyOptions({
+        scaleMargins: { top: 0.72, bottom: 0 },
+      });
+      chart.priceScale("bench-volume").applyOptions({
+        scaleMargins: { top: 0.72, bottom: 0 },
+      });
+      if (typeof chart.panes === "function") {
+        const panes = chart.panes();
+        const totalHeight = Math.max(container.clientHeight || 0, 320);
+        if (typeof panes?.[0]?.setHeight === "function") panes[0].setHeight(Math.round(totalHeight * 0.58));
+        if (typeof panes?.[1]?.setHeight === "function") panes[1].setHeight(Math.round(totalHeight * 0.42));
       }
-      return null;
+
+      const tooltip = document.createElement("div");
+      tooltip.className = "lw-tooltip";
+      tooltip.style.display = "none";
+      container.appendChild(tooltip);
+
+      return {
+        chart,
+        container,
+        candles,
+        volume,
+        benchCandles,
+        benchVolume,
+        tooltip,
+        resizeObserver: null,
+        crosshairHandler: null,
+      };
     },
 
-    _addVolumeSeries(chart, options) {
-      return this._addCandlestickSeries(chart, options);
+    _addCandlestickSeries(chart, options, paneIndex = null) {
+      const lw = window.LightweightCharts || {};
+      let series = null;
+      if (paneIndex != null && typeof chart.addSeries === "function" && lw.CandlestickSeries) {
+        series = chart.addSeries(lw.CandlestickSeries, options, paneIndex);
+      } else if (typeof chart.addCandlestickSeries === "function") {
+        series = chart.addCandlestickSeries(options);
+      } else if (typeof chart.addSeries === "function" && lw.CandlestickSeries) {
+        series = chart.addSeries(lw.CandlestickSeries, options);
+      }
+      if (series && paneIndex != null && typeof series.moveToPane === "function") {
+        try {
+          series.moveToPane(paneIndex);
+        } catch (_) {}
+      }
+      return series;
     },
 
-    _addLineSeries(chart, options) {
+    _addVolumeSeries(chart, options, paneIndex = null) {
+      return this._addCandlestickSeries(chart, options, paneIndex);
+    },
+
+    _addLineSeries(chart, options, paneIndex = null) {
       const lw = window.LightweightCharts || {};
-      if (typeof chart.addLineSeries === "function") {
-        return chart.addLineSeries(options);
+      let series = null;
+      if (paneIndex != null && typeof chart.addSeries === "function" && lw.LineSeries) {
+        series = chart.addSeries(lw.LineSeries, options, paneIndex);
+      } else if (typeof chart.addLineSeries === "function") {
+        series = chart.addLineSeries(options);
+      } else if (typeof chart.addSeries === "function" && lw.LineSeries) {
+        series = chart.addSeries(lw.LineSeries, options);
       }
-      if (typeof chart.addSeries === "function" && lw.LineSeries) {
-        return chart.addSeries(lw.LineSeries, options);
+      if (series && paneIndex != null && typeof series.moveToPane === "function") {
+        try {
+          series.moveToPane(paneIndex);
+        } catch (_) {}
       }
-      return null;
+      return series;
+    },
+
+    _addHistogramSeries(chart, options, paneIndex = null) {
+      const lw = window.LightweightCharts || {};
+      let series = null;
+      if (paneIndex != null && typeof chart.addSeries === "function" && lw.HistogramSeries) {
+        series = chart.addSeries(lw.HistogramSeries, options, paneIndex);
+      } else if (typeof chart.addHistogramSeries === "function") {
+        series = chart.addHistogramSeries(options);
+      } else if (typeof chart.addSeries === "function" && lw.HistogramSeries) {
+        series = chart.addSeries(lw.HistogramSeries, options);
+      }
+      if (series && paneIndex != null && typeof series.moveToPane === "function") {
+        try {
+          series.moveToPane(paneIndex);
+        } catch (_) {}
+      }
+      return series;
+    },
+
+    _bindInstrumentScrollPagination(ctx) {
+      if (!ctx?.chart || typeof ctx.chart.timeScale !== "function") return;
+      const ts = ctx.chart.timeScale();
+      if (!ts || typeof ts.subscribeVisibleLogicalRangeChange !== "function") return;
+
+      const handler = async (range) => {
+        if (!range || !Number.isFinite(range.from)) return;
+        if (range.from > 40) return;
+
+        const tasks = [];
+        if (this.priceHasMore && !this.priceLoading) {
+          tasks.push(this.loadMorePrices({ preserveRange: true }));
+        }
+        if (this.showInstrumentBench && this.instrumentBenchHasMore && !this.instrumentBenchLoading) {
+          tasks.push(this.loadMoreInstrumentBenchmark({ preserveRange: true }));
+        }
+        if (tasks.length === 0) return;
+        try {
+          await Promise.all(tasks);
+        } catch (_) {}
+      };
+
+      ts.subscribeVisibleLogicalRangeChange(handler);
+      ctx.scrollPagingUnsub = () => {
+        try {
+          ts.unsubscribeVisibleLogicalRangeChange(handler);
+        } catch (_) {}
+      };
     },
 
     _bindChartResize(ctx) {
@@ -523,6 +792,7 @@ function dashboard() {
       if (!ctx) return;
       if (ctx.resizeObserver) ctx.resizeObserver.disconnect();
       if (ctx.crosshairHandler) ctx.chart.unsubscribeCrosshairMove(ctx.crosshairHandler);
+      if (ctx.scrollPagingUnsub) ctx.scrollPagingUnsub();
       if (ctx.tooltip && ctx.tooltip.parentNode) ctx.tooltip.parentNode.removeChild(ctx.tooltip);
       ctx.chart.remove();
     },
@@ -537,6 +807,8 @@ function dashboard() {
       resizeOne(this._priceChartCtx);
       resizeOne(this._benchChartCtx);
       resizeOne(this._instrumentBenchChartCtx);
+      this._syncCombinedInstrumentPaneHeights();
+      this._syncInstrumentChartScaleWidth();
     },
 
     _toCandleRows(items) {
@@ -551,6 +823,34 @@ function dashboard() {
           trade_date: row.trade_date,
         }))
         .filter((row) => row.time && row.open != null && row.high != null && row.low != null && row.close != null);
+    },
+
+    _normalizePagedPayload(data) {
+      if (Array.isArray(data)) {
+        return {
+          items: data,
+          total: data.length,
+          limit: data.length,
+          offset: 0,
+          has_more: false,
+        };
+      }
+      const items = Array.isArray(data?.items) ? data.items : [];
+      const rawTotal = Number(data?.total);
+      const hasExplicitTotal = data?.total != null && Number.isFinite(rawTotal);
+      const total = hasExplicitTotal ? rawTotal : null;
+      const limit = Number.isFinite(Number(data?.limit)) ? Number(data.limit) : items.length;
+      const offset = Number.isFinite(Number(data?.offset)) ? Number(data.offset) : 0;
+      const hasMore = typeof data?.has_more === "boolean"
+        ? data.has_more
+        : (hasExplicitTotal ? (offset + items.length) < rawTotal : false);
+      return {
+        items,
+        total,
+        limit,
+        offset,
+        has_more: hasMore,
+      };
     },
 
     _bindTooltip(ctx, rows, priceMASeries, volumeMASeries) {
@@ -611,34 +911,81 @@ function dashboard() {
       ctx.chart.subscribeCrosshairMove(handler);
     },
 
+    onInstrumentQueryInput() {
+      if (this._instrumentSearchTimer) {
+        window.clearTimeout(this._instrumentSearchTimer);
+        this._instrumentSearchTimer = null;
+      }
+
+      const query = String(this.instrumentQuery || "").trim();
+      if (query.length === 1) {
+        this.instrumentOptions = [];
+        this.instrumentHasMore = false;
+        this.instrumentTotal = null;
+        return;
+      }
+
+      this._instrumentSearchTimer = window.setTimeout(() => {
+        this.searchInstrumentOptions();
+      }, 300);
+    },
+
     async searchInstrumentOptions() {
+      if (this._instrumentSearchTimer) {
+        window.clearTimeout(this._instrumentSearchTimer);
+        this._instrumentSearchTimer = null;
+      }
+      this.instrumentOffset = 0;
       this.optionLoading = true;
       const data = await dashboardApi
         .get("/api/v1/dashboard/instrument-options", {
           q: this.instrumentQuery,
-          limit: 20,
+          limit: this.instrumentLimit,
+          offset: this.instrumentOffset,
+          include_total: false,
         })
-        .catch(() => []);
-      this.instrumentOptions = Array.isArray(data) ? data : [];
+        .catch(() => ({ items: [], total: null, limit: this.instrumentLimit, offset: 0, has_more: false }));
+      const payload = this._normalizePagedPayload(data);
+      this.instrumentOptions = payload.items;
+      this.instrumentTotal = payload.total;
+      this.instrumentHasMore = payload.has_more;
       this.optionLoading = false;
       if (!this.selectedInstrument && this.instrumentOptions.length > 0) {
         await this.selectInstrument(this.instrumentOptions[0]);
       }
     },
 
+    async loadMoreInstrumentOptions() {
+      if (this.optionLoading || !this.instrumentHasMore) return;
+      this.optionLoading = true;
+      const nextOffset = this.instrumentOffset + this.instrumentLimit;
+      const data = await dashboardApi
+        .get("/api/v1/dashboard/instrument-options", {
+          q: this.instrumentQuery,
+          limit: this.instrumentLimit,
+          offset: nextOffset,
+          include_total: false,
+        })
+        .catch(() => ({ items: [], total: this.instrumentTotal, limit: this.instrumentLimit, offset: nextOffset, has_more: false }));
+      const payload = this._normalizePagedPayload(data);
+      this.instrumentOptions = this.instrumentOptions.concat(payload.items);
+      this.instrumentOffset = nextOffset;
+      this.instrumentTotal = payload.total;
+      this.instrumentHasMore = payload.has_more;
+      this.optionLoading = false;
+    },
+
     async selectInstrument(option) {
       this.selectedInstrument = option;
       this.instrumentProfile = null;
       this.prices = [];
+      this.priceTotal = null;
+      this.priceOffset = 0;
+      this.priceHasMore = false;
       this.priceQueried = false;
       this._disposeChartContext(this._priceChartCtx);
       this._priceChartCtx = null;
       this.resetInstrumentBenchmark();
-      await Promise.all([this.loadInstrumentProfile(), this.loadPrices()]);
-    },
-
-    async reloadSelectedInstrument() {
-      if (!this.selectedInstrument) return;
       await Promise.all([this.loadInstrumentProfile(), this.loadPrices()]);
     },
 
@@ -651,26 +998,120 @@ function dashboard() {
       this.instrumentProfile = data || {};
     },
 
+    async _fetchAllPaged(path, params, fallbackLimit) {
+      const items = [];
+      let total = 0;
+      let offset = 0;
+      let hasMore = false;
+
+      while (true) {
+        const data = await dashboardApi
+          .get(path, {
+            ...params,
+            limit: fallbackLimit,
+            offset,
+          })
+          .catch(() => ({ items: [], total: 0, limit: fallbackLimit, offset, has_more: false }));
+        const payload = this._normalizePagedPayload(data);
+        items.push(...payload.items);
+        total = payload.total;
+        hasMore = payload.has_more;
+        if (!payload.has_more || payload.items.length === 0) break;
+        offset += fallbackLimit;
+      }
+
+      return { items, total, offset, hasMore };
+    },
+
+    _focusChartOnRecentYear(chart, rows) {
+      const timeScale = chart?.timeScale?.();
+      if (!timeScale || !Array.isArray(rows) || rows.length === 0) return;
+
+      const approxTradingDaysInYear = 252;
+      const visibleBars = Math.min(rows.length, approxTradingDaysInYear);
+      const from = Math.max(0, rows.length - visibleBars);
+      const to = rows.length - 1 + 5;
+
+      if (typeof timeScale.setVisibleLogicalRange === "function") {
+        try {
+          timeScale.setVisibleLogicalRange({ from, to });
+          return;
+        } catch (_) {}
+      }
+
+      if (typeof timeScale.setVisibleRange === "function") {
+        const last = rows[rows.length - 1]?.time;
+        const first = rows[from]?.time;
+        if (first && last) {
+          try {
+            timeScale.setVisibleRange({ from: first, to: last });
+            return;
+          } catch (_) {}
+        }
+      }
+
+      if (typeof timeScale.fitContent === "function") timeScale.fitContent();
+    },
+
     async loadPrices() {
       if (!this.selectedInstrument?.external_code) return;
       const requestSeq = ++this._priceRequestSeq;
+      this.priceOffset = 0;
       this.priceLoading = true;
       this.priceQueried = true;
+
       const data = await dashboardApi
         .get("/api/v1/dashboard/prices", {
           external_code: this.selectedInstrument.external_code,
-          date_from: this.priceFrom,
-          date_to: this.priceTo,
+          limit: this.priceLimit,
+          offset: 0,
+          include_total: false,
         })
-        .catch(() => ({ items: [] }));
+        .catch(() => ({ items: [], total: null, limit: this.priceLimit, offset: 0, has_more: false }));
       if (requestSeq !== this._priceRequestSeq) return;
-      this.prices = (data.items || []).slice().reverse();
+
+      const payload = this._normalizePagedPayload(data);
+      this.prices = payload.items.slice().reverse();
+      this.priceTotal = payload.total;
+      this.priceOffset = payload.offset;
+      this.priceHasMore = payload.has_more;
       this.priceLoading = false;
       await this.$nextTick();
       this.renderPriceChart();
       if (this.showInstrumentBench) {
         await this.loadInstrumentBenchmark();
       }
+    },
+
+    async loadMorePrices(options = {}) {
+      if (!this.selectedInstrument?.external_code) return;
+      if (this.priceLoading || !this.priceHasMore) return;
+
+      const preserveRange = options?.preserveRange === true;
+      const requestSeq = ++this._priceRequestSeq;
+      const nextOffset = this.priceOffset + this.priceLimit;
+      this.priceLoading = true;
+
+      const data = await dashboardApi
+        .get("/api/v1/dashboard/prices", {
+          external_code: this.selectedInstrument.external_code,
+          limit: this.priceLimit,
+          offset: nextOffset,
+          include_total: false,
+        })
+        .catch(() => ({ items: [], total: this.priceTotal, limit: this.priceLimit, offset: nextOffset, has_more: false }));
+      if (requestSeq !== this._priceRequestSeq) return;
+
+      const payload = this._normalizePagedPayload(data);
+      const olderChunk = payload.items.slice().reverse();
+      this.prices = olderChunk.concat(this.prices);
+      this.priceOffset = nextOffset;
+      this.priceHasMore = payload.has_more;
+      if (payload.total != null) this.priceTotal = payload.total;
+      this.priceLoading = false;
+
+      await this.$nextTick();
+      this.renderPriceChart({ preserveRange });
     },
 
     resolveInstrumentBenchmarkIndexCode(marketCode) {
@@ -698,6 +1139,9 @@ function dashboard() {
       this.instrumentBenchIndexCode = "";
       this.instrumentBenchSeriesName = "";
       this.instrumentBenchSeriesOptions = [];
+      this.instrumentBenchTotal = null;
+      this.instrumentBenchOffset = 0;
+      this.instrumentBenchHasMore = false;
       this._disposeChartContext(this._instrumentBenchChartCtx);
       this._instrumentBenchChartCtx = null;
     },
@@ -721,6 +1165,8 @@ function dashboard() {
     async onInstrumentBenchmarkToggle() {
       if (!this.showInstrumentBench) {
         this.resetInstrumentBenchmark();
+        await this.$nextTick();
+        this.renderPriceChart();
         return;
       }
       if (!this.instrumentBenchIndexCode) {
@@ -741,16 +1187,20 @@ function dashboard() {
       await this.loadInstrumentBenchmark();
     },
 
-    async loadInstrumentBenchmark() {
+    async loadInstrumentBenchmark(options = {}) {
       if (!this.showInstrumentBench || !this.selectedInstrument) return;
       if (!this.instrumentBenchIndexCode) {
         this.ensureInstrumentBenchmarkIndexDefault();
       }
+      const preserveRange = options?.preserveRange === true;
       const requestSeq = ++this._instrumentBenchRequestSeq;
       this.instrumentBenchLoading = true;
       this.instrumentBenchQueried = true;
       this.instrumentBenchError = "";
       this.instrumentBenchSeries = [];
+      this.instrumentBenchTotal = null;
+      this.instrumentBenchOffset = 0;
+      this.instrumentBenchHasMore = false;
       this._disposeChartContext(this._instrumentBenchChartCtx);
       this._instrumentBenchChartCtx = null;
       const indexCode = this.instrumentBenchIndexCode;
@@ -760,71 +1210,88 @@ function dashboard() {
         .catch(() => []);
       if (requestSeq !== this._instrumentBenchRequestSeq) return;
 
-      const options = Array.isArray(seriesOptions) ? seriesOptions : [];
-      this.instrumentBenchSeriesOptions = options;
-      if (options.length === 0) {
+      const optionsRows = Array.isArray(seriesOptions) ? seriesOptions : [];
+      this.instrumentBenchSeriesOptions = optionsRows;
+      if (optionsRows.length === 0) {
         this.instrumentBenchLoading = false;
         this.instrumentBenchError = "선택된 시장에 대한 벤치마크 시리즈를 찾지 못했습니다.";
         return;
       }
-      const hasSelected = options.some((row) => row.index_name === this.instrumentBenchSeriesName);
+      const hasSelected = optionsRows.some((row) => row.index_name === this.instrumentBenchSeriesName);
       if (!hasSelected) {
         const marketCode = this.instrumentProfile?.market_code || this.selectedInstrument?.market_code;
         const defaultSeriesName = this.resolveInstrumentBenchmarkDefaultSeriesName(marketCode);
-        const exactDefault = options.find((row) => String(row?.index_name || "").trim() === defaultSeriesName);
-        this.instrumentBenchSeriesName = exactDefault?.index_name || options[0].index_name;
+        const exactDefault = optionsRows.find((row) => String(row?.index_name || "").trim() === defaultSeriesName);
+        this.instrumentBenchSeriesName = exactDefault?.index_name || optionsRows[0].index_name;
       }
+
       const data = await dashboardApi
         .get(`/api/v1/dashboard/benchmarks/${encodeURIComponent(indexCode)}`, {
           series_name: this.instrumentBenchSeriesName,
-          date_from: this.priceFrom,
-          date_to: this.priceTo,
-          limit: this.benchLimit,
+          limit: this.instrumentBenchLimit,
           offset: 0,
+          include_total: false,
         })
-        .catch(() => ({ items: [] }));
+        .catch(() => ({ items: [], total: null, limit: this.instrumentBenchLimit, offset: 0, has_more: false }));
       if (requestSeq !== this._instrumentBenchRequestSeq) return;
 
-      this.instrumentBenchSeries = (data.items || []).slice().reverse();
+      const payload = this._normalizePagedPayload(data);
+      this.instrumentBenchSeries = payload.items.slice().reverse();
+      this.instrumentBenchTotal = payload.total;
+      this.instrumentBenchOffset = payload.offset;
+      this.instrumentBenchHasMore = payload.has_more;
       this.instrumentBenchLoading = false;
       await this.$nextTick();
-      this.renderInstrumentBenchChart();
+      this.renderPriceChart({ preserveRange });
+    },
+
+    async loadMoreInstrumentBenchmark(options = {}) {
+      if (!this.showInstrumentBench || !this.selectedInstrument) return;
+      if (this.instrumentBenchLoading || !this.instrumentBenchHasMore) return;
+
+      const preserveRange = options?.preserveRange === true;
+      const requestSeq = ++this._instrumentBenchRequestSeq;
+      const nextOffset = this.instrumentBenchOffset + this.instrumentBenchLimit;
+      this.instrumentBenchLoading = true;
+
+      const data = await dashboardApi
+        .get(`/api/v1/dashboard/benchmarks/${encodeURIComponent(this.instrumentBenchIndexCode)}`, {
+          series_name: this.instrumentBenchSeriesName,
+          limit: this.instrumentBenchLimit,
+          offset: nextOffset,
+          include_total: false,
+        })
+        .catch(() => ({ items: [], total: this.instrumentBenchTotal, limit: this.instrumentBenchLimit, offset: nextOffset, has_more: false }));
+      if (requestSeq !== this._instrumentBenchRequestSeq) return;
+
+      const payload = this._normalizePagedPayload(data);
+      const olderChunk = payload.items.slice().reverse();
+      this.instrumentBenchSeries = olderChunk.concat(this.instrumentBenchSeries);
+      this.instrumentBenchOffset = nextOffset;
+      this.instrumentBenchHasMore = payload.has_more;
+      if (payload.total != null) this.instrumentBenchTotal = payload.total;
+      this.instrumentBenchLoading = false;
+
+      await this.$nextTick();
+      this.renderPriceChart({ preserveRange });
     },
 
     renderInstrumentBenchChart() {
-      this._clearInstrumentChartSync();
-      this._disposeChartContext(this._instrumentBenchChartCtx);
-      this._instrumentBenchChartCtx = null;
-      if (!this.showInstrumentBench || !this.instrumentBenchSeries.length) return;
-      this.instrumentBenchError = "";
-
-      try {
-        const ctx = this._createChartContext("instrumentBenchChart");
-        if (!ctx) return;
-        const rows = this._toCandleRows(this.instrumentBenchSeries);
-        if (!rows.length) {
-          this.instrumentBenchError = "유효한 OHLC 데이터가 없어 캔들차트를 그릴 수 없습니다.";
-          return;
-        }
-        ctx.timeKeyMap = new Map(rows.map((row) => [formatCompactBusinessDay(row.time), row]));
-
-        ctx.candles.setData(rows.map((r) => ({ time: r.time, open: r.open, high: r.high, low: r.low, close: r.close })));
-        ctx.volume.setData(rows.map((r) => toVolumeCandlePoint(r, BULL_VOLUME_COLOR)));
-
-        this._bindTooltip(ctx, rows, [], []);
-        this._bindChartResize(ctx);
-        ctx.chart.timeScale().fitContent();
-        this._instrumentBenchChartCtx = ctx;
-        this._rewireInstrumentChartSyncIfReady();
-      } catch (err) {
-        this._disposeChartContext(this._instrumentBenchChartCtx);
-        this._instrumentBenchChartCtx = null;
-        console.error("renderInstrumentBenchChart failed", err);
-        this.instrumentBenchError = "차트를 렌더링하지 못했습니다.";
-      }
+      this.renderPriceChart();
     },
 
-    renderPriceChart() {
+    renderPriceChart(options = {}) {
+      const preserveRange = options?.preserveRange === true;
+      let prevVisibleRange = null;
+      let prevLogicalRange = null;
+      if (preserveRange && this._priceChartCtx?.chart?.timeScale) {
+        const prevTs = this._priceChartCtx.chart.timeScale();
+        if (prevTs) {
+          if (typeof prevTs.getVisibleRange === "function") prevVisibleRange = prevTs.getVisibleRange();
+          if (typeof prevTs.getVisibleLogicalRange === "function") prevLogicalRange = prevTs.getVisibleLogicalRange();
+        }
+      }
+
       this._clearInstrumentChartSync();
       this._disposeChartContext(this._priceChartCtx);
       this._priceChartCtx = null;
@@ -832,13 +1299,20 @@ function dashboard() {
       if (!this.prices.length) return;
 
       try {
-        const ctx = this._createChartContext("priceChart");
-        if (!ctx) return;
         const rows = this._toCandleRows(this.prices);
         if (!rows.length) {
           this.priceChartError = "유효한 OHLC 데이터가 없어 캔들차트를 그릴 수 없습니다.";
           return;
         }
+
+        const showCombined = this.showInstrumentBench && this.instrumentBenchSeries.length > 0;
+        const benchRows = showCombined ? this._toCandleRows(this.instrumentBenchSeries) : [];
+        const ctx = showCombined ? this._createCombinedInstrumentChartContext("priceChart") : this._createChartContext("priceChart");
+        if (!ctx) {
+          this.priceChartError = showCombined ? "통합 차트를 생성하지 못했습니다." : "차트를 렌더링하지 못했습니다.";
+          return;
+        }
+        ctx.baseRows = rows;
         ctx.timeKeyMap = new Map(rows.map((row) => [formatCompactBusinessDay(row.time), row]));
 
         ctx.candles.setData(rows.map((r) => ({ time: r.time, open: r.open, high: r.high, low: r.low, close: r.close })));
@@ -850,7 +1324,7 @@ function dashboard() {
             lineWidth: 1.5,
             priceLineVisible: false,
             lastValueVisible: false,
-          });
+          }, showCombined ? 0 : null);
           if (!series) return null;
           series.setData(computeSMA(rows, period, (r) => r.close));
           return { label: `SMA ${period}`, period, series };
@@ -863,17 +1337,54 @@ function dashboard() {
             priceScaleId: "volume",
             priceLineVisible: false,
             lastValueVisible: false,
-          });
+          }, showCombined ? 0 : null);
           if (!series) return null;
           series.setData(computeSMA(rows, period, (r) => r.volume));
           return { label: `SMA ${period}`, period, series };
         }).filter(Boolean);
 
+        if (showCombined && ctx.benchCandles && ctx.benchVolume) {
+          if (!benchRows.length) {
+            this.priceChartError = "벤치마크 OHLC 데이터가 없어 통합 차트를 그릴 수 없습니다.";
+            this._disposeChartContext(ctx);
+            return;
+          }
+          ctx.benchRows = benchRows;
+          ctx.benchTimeKeyMap = new Map(benchRows.map((row) => [formatCompactBusinessDay(row.time), row]));
+          ctx.benchCandles.setData(benchRows.map((r) => ({ time: r.time, open: r.open, high: r.high, low: r.low, close: r.close })));
+          ctx.benchVolume.setData(benchRows.map((r) => toVolumeHistogramPoint(r, BULL_VOLUME_COLOR)));
+        }
+
         this._bindTooltip(ctx, rows, priceMASeries, volumeMASeries);
         this._bindChartResize(ctx);
-        ctx.chart.timeScale().fitContent();
+        this._bindInstrumentScrollPagination(ctx);
+
+        if (preserveRange) {
+          const ts = ctx.chart?.timeScale?.();
+          if (ts) {
+            let restored = false;
+            if (prevVisibleRange && typeof ts.setVisibleRange === "function") {
+              try {
+                ts.setVisibleRange(prevVisibleRange);
+                restored = true;
+              } catch (_) {}
+            }
+            if (!restored && prevLogicalRange && typeof ts.setVisibleLogicalRange === "function") {
+              try {
+                ts.setVisibleLogicalRange(prevLogicalRange);
+                restored = true;
+              } catch (_) {}
+            }
+            if (!restored) this._focusChartOnRecentYear(ctx.chart, rows);
+          } else {
+            this._focusChartOnRecentYear(ctx.chart, rows);
+          }
+        } else {
+          this._focusChartOnRecentYear(ctx.chart, rows);
+        }
+
         this._priceChartCtx = ctx;
-        this._rewireInstrumentChartSyncIfReady();
+        this._syncCombinedInstrumentPaneHeights();
       } catch (err) {
         this._disposeChartContext(this._priceChartCtx);
         this._priceChartCtx = null;
@@ -1028,3 +1539,21 @@ function dashboard() {
     },
   };
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

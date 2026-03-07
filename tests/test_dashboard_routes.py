@@ -1,9 +1,13 @@
-﻿import asyncio
+import asyncio
+from datetime import date
 
+from financial_data_collector.collectors import BenchmarkCollector
 from financial_data_collector.dashboard_routes import (
+    get_benchmark_series,
     get_instrument_options,
     get_instrument_profile,
     get_instruments,
+    get_prices,
 )
 
 
@@ -124,12 +128,68 @@ def test_dashboard_instrument_options_search(repo):
         ]
     )
 
-    payload = asyncio.run(get_instrument_options(_DummyRequest(repo), q="Alpha", limit=20))
+    payload = asyncio.run(get_instrument_options(_DummyRequest(repo), q="Alpha", limit=20, offset=0))
 
-    assert len(payload) == 1
-    assert payload[0]["external_code"] == "111111"
-    assert payload[0]["instrument_name"] == "Alpha Inc"
-    assert payload[0]["listed_status"] == "listed"
+    assert payload["total"] == 1
+    assert payload["has_more"] is False
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["external_code"] == "111111"
+    assert payload["items"][0]["instrument_name"] == "Alpha Inc"
+    assert payload["items"][0]["listed_status"] == "listed"
+
+
+def test_dashboard_instrument_options_supports_offset(repo):
+    repo.upsert_instruments(
+        [
+            {
+                "instrument_id": "2e44fb8b-7341-4d2f-a2c9-c7e1946d72cf",
+                "external_code": "100001",
+                "market_code": "KOSDAQ",
+                "instrument_name": "Offset A",
+                "instrument_name_abbr": None,
+                "instrument_name_eng": None,
+                "listing_date": "2021-01-01",
+                "delisting_date": None,
+                "listed_shares": None,
+                "security_group": None,
+                "sector_name": None,
+                "stock_type": None,
+                "par_value": None,
+                "source_name": "krx",
+                "collected_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            },
+            {
+                "instrument_id": "cfd609a4-1840-4ae2-a6e2-c2125c4d3345",
+                "external_code": "100002",
+                "market_code": "KOSDAQ",
+                "instrument_name": "Offset B",
+                "instrument_name_abbr": None,
+                "instrument_name_eng": None,
+                "listing_date": "2021-01-01",
+                "delisting_date": None,
+                "listed_shares": None,
+                "security_group": None,
+                "sector_name": None,
+                "stock_type": None,
+                "par_value": None,
+                "source_name": "krx",
+                "collected_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            },
+        ]
+    )
+
+    first = asyncio.run(get_instrument_options(_DummyRequest(repo), q="Offset", limit=1, offset=0))
+    second = asyncio.run(get_instrument_options(_DummyRequest(repo), q="Offset", limit=1, offset=1))
+
+    assert first["total"] == 2
+    assert first["has_more"] is True
+    assert len(first["items"]) == 1
+    assert second["total"] == 2
+    assert second["has_more"] is False
+    assert len(second["items"]) == 1
+    assert first["items"][0]["external_code"] != second["items"][0]["external_code"]
 
 
 def test_dashboard_instrument_profile_prioritizes_listed_record(repo):
@@ -180,3 +240,254 @@ def test_dashboard_instrument_profile_prioritizes_listed_record(repo):
     assert payload["instrument_name"] == "Gamma Corp"
     assert payload["market_code"] == "KOSPI"
     assert payload["listed_status"] == "listed"
+
+
+def test_dashboard_prices_supports_pagination(repo):
+    instrument_id = "8d4ff4fb-11a3-492e-92b7-b9cf4076e50f"
+    repo.upsert_instruments(
+        [
+            {
+                "instrument_id": instrument_id,
+                "external_code": "444444",
+                "market_code": "KOSDAQ",
+                "instrument_name": "Paged Price",
+                "instrument_name_abbr": None,
+                "instrument_name_eng": None,
+                "listing_date": "2020-01-01",
+                "delisting_date": None,
+                "listed_shares": None,
+                "security_group": None,
+                "sector_name": None,
+                "stock_type": None,
+                "par_value": None,
+                "source_name": "krx",
+                "collected_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            }
+        ]
+    )
+    repo.upsert_daily_market(
+        [
+            {
+                "instrument_id": instrument_id,
+                "trade_date": "2026-01-01",
+                "open": 10.0,
+                "high": 11.0,
+                "low": 9.5,
+                "close": 10.5,
+                "volume": 1000,
+                "turnover_value": 10000,
+                "change_rate": 1.0,
+                "record_status": "VALID",
+                "source_name": "krx",
+                "collected_at": "2026-01-01T00:00:00Z",
+            },
+            {
+                "instrument_id": instrument_id,
+                "trade_date": "2026-01-02",
+                "open": 11.0,
+                "high": 12.0,
+                "low": 10.5,
+                "close": 11.5,
+                "volume": 1100,
+                "turnover_value": 11000,
+                "change_rate": 2.0,
+                "record_status": "VALID",
+                "source_name": "krx",
+                "collected_at": "2026-01-02T00:00:00Z",
+            },
+            {
+                "instrument_id": instrument_id,
+                "trade_date": "2026-01-03",
+                "open": 12.0,
+                "high": 13.0,
+                "low": 11.5,
+                "close": 12.5,
+                "volume": 1200,
+                "turnover_value": 12000,
+                "change_rate": 3.0,
+                "record_status": "VALID",
+                "source_name": "krx",
+                "collected_at": "2026-01-03T00:00:00Z",
+            },
+        ]
+    )
+
+    first = asyncio.run(
+        get_prices(
+            _DummyRequest(repo),
+            external_code="444444",
+            date_from="",
+            date_to="",
+            limit=2,
+            offset=0,
+        )
+    )
+    second = asyncio.run(
+        get_prices(
+            _DummyRequest(repo),
+            external_code="444444",
+            date_from="",
+            date_to="",
+            limit=2,
+            offset=2,
+        )
+    )
+
+    assert first["total"] == 3
+    assert first["has_more"] is True
+    assert len(first["items"]) == 2
+    assert first["items"][0]["trade_date"] == "2026-01-03"
+    assert second["total"] == 3
+    assert second["has_more"] is False
+    assert len(second["items"]) == 1
+    assert second["items"][0]["trade_date"] == "2026-01-01"
+
+
+
+def test_dashboard_benchmark_detail_defaults_to_available_series(repo):
+    BenchmarkCollector(repo).collect(
+        [
+            {
+                "index_code": "KOSDAQ",
+                "index_name": "KOSDAQ_PRIMARY",
+                "trade_date": date(2026, 1, 2),
+                "open": 100,
+                "high": 101,
+                "low": 99,
+                "close": 100.5,
+            }
+        ],
+        "krx",
+        "r1",
+    )
+
+    payload = asyncio.run(
+        get_benchmark_series(
+            "KOSDAQ",
+            _DummyRequest(repo),
+            series_name="",
+            date_from="",
+            date_to="",
+            limit=5,
+            offset=0,
+        )
+    )
+
+    assert payload["total"] == 1
+    assert len(payload["items"]) == 1
+    assert float(payload["items"][0]["close"]) == 100.5
+
+
+
+def test_dashboard_prices_returns_all_rows_without_date_filter(repo):
+    instrument_id = "c1c3e6ec-0ddb-44db-ae11-62f0842fb95d"
+    repo.upsert_instruments(
+        [
+            {
+                "instrument_id": instrument_id,
+                "external_code": "555555",
+                "market_code": "KOSPI",
+                "instrument_name": "Full History",
+                "instrument_name_abbr": None,
+                "instrument_name_eng": None,
+                "listing_date": "2020-01-01",
+                "delisting_date": None,
+                "listed_shares": None,
+                "security_group": None,
+                "sector_name": None,
+                "stock_type": None,
+                "par_value": None,
+                "source_name": "krx",
+                "collected_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            }
+        ]
+    )
+    repo.upsert_daily_market(
+        [
+            {
+                "instrument_id": instrument_id,
+                "trade_date": "2024-12-31",
+                "open": 9.0,
+                "high": 10.0,
+                "low": 8.5,
+                "close": 9.5,
+                "volume": 900,
+                "turnover_value": 9000,
+                "change_rate": -1.0,
+                "record_status": "VALID",
+                "source_name": "krx",
+                "collected_at": "2024-12-31T00:00:00Z",
+            },
+            {
+                "instrument_id": instrument_id,
+                "trade_date": "2025-12-31",
+                "open": 19.0,
+                "high": 20.0,
+                "low": 18.5,
+                "close": 19.5,
+                "volume": 1900,
+                "turnover_value": 19000,
+                "change_rate": 1.0,
+                "record_status": "VALID",
+                "source_name": "krx",
+                "collected_at": "2025-12-31T00:00:00Z",
+            },
+        ]
+    )
+
+    payload = asyncio.run(
+        get_prices(
+            _DummyRequest(repo),
+            external_code="555555",
+            date_from="",
+            date_to="",
+            limit=10,
+            offset=0,
+        )
+    )
+
+    assert payload["total"] == 2
+    assert [row["trade_date"] for row in payload["items"]] == ["2025-12-31", "2024-12-31"]
+
+def test_dashboard_benchmark_detail_prefers_representative_series(repo):
+    BenchmarkCollector(repo).collect(
+        [
+            {
+                "index_code": "KOSDAQ",
+                "index_name": "건설",
+                "trade_date": date(2026, 1, 2),
+                "open": 100,
+                "high": 101,
+                "low": 99,
+                "close": 100.5,
+            },
+            {
+                "index_code": "KOSDAQ",
+                "index_name": "코스닥",
+                "trade_date": date(2026, 1, 2),
+                "open": 1100,
+                "high": 1101,
+                "low": 1099,
+                "close": 1100.5,
+            }
+        ],
+        "krx",
+        "r1",
+    )
+
+    payload = asyncio.run(
+        get_benchmark_series(
+            "KOSDAQ",
+            _DummyRequest(repo),
+            series_name="",
+            date_from="",
+            date_to="",
+            limit=5,
+            offset=0,
+        )
+    )
+
+    assert payload["total"] == 1
+    assert payload["items"][0]["close"] == 1100.5

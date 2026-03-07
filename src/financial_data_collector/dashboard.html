@@ -86,15 +86,8 @@
     <div class="section">
       <h2>종목 선택</h2>
       <div class="controls">
-        <input x-model="instrumentQuery" @keyup.enter="searchInstrumentOptions()" placeholder="종목코드 또는 종목명 검색" style="width:300px">
+        <input x-model="instrumentQuery" @input="onInstrumentQueryInput()" @keyup.enter="searchInstrumentOptions()" placeholder="종목코드 또는 종목명 검색" style="width:300px">
         <button @click="searchInstrumentOptions()">검색</button>
-        <input type="date" x-model="priceFrom">
-        <input type="date" x-model="priceTo">
-        <button @click="reloadSelectedInstrument()" :disabled="!selectedInstrument">조회</button>
-      </div>
-      <div class="controls">
-        <button @click="applyRecentMonths(6)" style="background:#4a5568">최근 6개월</button>
-        <button @click="applyRecentMonths(12)" style="background:#4a5568">최근 1년</button>
       </div>
       <div x-show="optionLoading" class="loading">종목 검색 중...</div>
       <div x-show="!optionLoading && instrumentOptions.length === 0" class="empty">검색된 종목이 없습니다</div>
@@ -108,6 +101,10 @@
             <span class="picker-market" x-text="opt.market_code"></span>
           </button>
         </template>
+      </div>
+      <div class="controls" x-show="!optionLoading && instrumentOptions.length > 0">
+        <span x-text="'표시: ' + fmt(instrumentOptions.length) + ' / ' + fmt(instrumentTotal)"></span>
+        <button @click="loadMoreInstrumentOptions()" x-show="instrumentHasMore">더보기</button>
       </div>
     </div>
 
@@ -162,82 +159,52 @@
             </template>
           </div>
         </div>
+        <div class="ma-group ma-bench-group">
+          <div class="ma-label">벤치마크</div>
+          <div class="inline-check-row ma-bench-toggle">
+            <label class="inline-check">
+              <input type="checkbox" x-model="showInstrumentBench" @change="onInstrumentBenchmarkToggle()">
+              <span>벤치마크 캔들 표시</span>
+            </label>
+            <span class="inline-meta" x-show="showInstrumentBench && instrumentBenchIndexCode && instrumentBenchSeriesName"
+                  x-text="instrumentBenchIndexCode + ' / ' + instrumentBenchSeriesName"></span>
+          </div>
+          <div class="controls ma-bench-controls" x-show="showInstrumentBench">
+            <select x-model="instrumentBenchIndexCode" @change="onInstrumentBenchmarkIndexChange()">
+              <template x-for="b in benchmarks" :key="'inst-bench-index-' + b.index_code">
+                <option :value="b.index_code" x-text="b.index_code"></option>
+              </template>
+            </select>
+            <select x-model="instrumentBenchSeriesName" @change="onInstrumentBenchmarkSeriesChange()" :disabled="instrumentBenchSeriesOptions.length === 0">
+              <template x-for="s in instrumentBenchSeriesOptions" :key="'inst-bench-series-' + s.index_name">
+                <option :value="s.index_name" x-text="s.index_name + ' (' + fmt(s.record_count) + '건)'"></option>
+              </template>
+            </select>
+            <button @click="loadInstrumentBenchmark()" :disabled="!instrumentBenchIndexCode || !instrumentBenchSeriesName">조회</button>
+          </div>
+        </div>
         <div class="ma-error" x-show="maSettingsError" x-text="maSettingsError"></div>
       </div>
       <div x-show="priceLoading" class="loading">로딩 중...</div>
       <div x-show="!priceLoading && prices.length === 0 && priceQueried" class="empty">데이터가 없습니다</div>
       <div x-show="prices.length > 0">
-        <div class="chart-wrap">
+        <div class="chart-wrap" :style="showInstrumentBench && instrumentBenchSeries.length > 0 ? 'height: 760px' : ''">
           <div id="priceChart" class="lw-chart"></div>
         </div>
         <div class="empty" x-show="priceChartError" x-text="priceChartError"></div>
-      </div>
-    </div>
-
-    <div class="section" x-show="selectedInstrument">
-      <h2>벤치마크 일별 캔들</h2>
-      <div class="inline-check-row">
-        <label class="inline-check">
-          <input type="checkbox" x-model="showInstrumentBench" @change="onInstrumentBenchmarkToggle()">
-          <span>벤치마크 캔들 표시</span>
-        </label>
-        <span class="inline-meta" x-show="showInstrumentBench && instrumentBenchIndexCode && instrumentBenchSeriesName"
-              x-text="instrumentBenchIndexCode + ' / ' + instrumentBenchSeriesName"></span>
-      </div>
-      <div class="controls" x-show="showInstrumentBench">
-        <select x-model="instrumentBenchIndexCode" @change="onInstrumentBenchmarkIndexChange()">
-          <template x-for="b in benchmarks" :key="'inst-bench-index-' + b.index_code">
-            <option :value="b.index_code" x-text="b.index_code"></option>
-          </template>
-        </select>
-        <select x-model="instrumentBenchSeriesName" @change="onInstrumentBenchmarkSeriesChange()" :disabled="instrumentBenchSeriesOptions.length === 0">
-          <template x-for="s in instrumentBenchSeriesOptions" :key="'inst-bench-series-' + s.index_name">
-            <option :value="s.index_name" x-text="s.index_name + ' (' + fmt(s.record_count) + '건)'"></option>
-          </template>
-        </select>
-        <button @click="loadInstrumentBenchmark()" :disabled="!instrumentBenchIndexCode || !instrumentBenchSeriesName">조회</button>
       </div>
       <div x-show="showInstrumentBench && instrumentBenchLoading" class="loading">로딩 중...</div>
       <div x-show="showInstrumentBench && instrumentBenchError" class="empty" x-text="instrumentBenchError"></div>
       <div x-show="showInstrumentBench && !instrumentBenchLoading && !instrumentBenchError && instrumentBenchSeries.length === 0 && instrumentBenchQueried" class="empty">
         조회된 데이터가 없습니다
       </div>
-      <div x-show="showInstrumentBench && instrumentBenchSeries.length > 0">
-        <div class="chart-wrap">
-          <div id="instrumentBenchChart" class="lw-chart"></div>
-        </div>
-      </div>
     </div>
 
-    <div class="section" x-show="selectedInstrument">
-      <h2>일별 시세</h2>
-      <table x-show="prices.length > 0">
-        <thead>
-          <tr><th>일자</th><th>시가</th><th>고가</th><th>저가</th><th>종가</th><th>거래량</th><th>등락률(%)</th><th>상태</th></tr>
-        </thead>
-        <tbody>
-          <template x-for="p in prices" :key="p.trade_date">
-            <tr>
-              <td x-text="p.trade_date"></td>
-              <td x-text="fmt(p.open)"></td>
-              <td x-text="fmt(p.high)"></td>
-              <td x-text="fmt(p.low)"></td>
-              <td x-text="fmt(p.close)"></td>
-              <td x-text="fmt(p.volume)"></td>
-              <td x-text="p.change_rate != null ? p.change_rate.toFixed(2) : '-'"></td>
-              <td x-text="p.record_status"></td>
-            </tr>
-          </template>
-        </tbody>
-      </table>
-      <div x-show="prices.length === 0 && priceQueried" class="empty">표시할 시세 데이터가 없습니다</div>
-    </div>
   </div>
 
   <div x-show="activeTab === 'quality'">
     <div class="section">
       <h2>데이터 이슈 현황 (미해결)</h2>
-      <div class="controls">
         <select x-model="qualitySeverity" @change="loadQualityIssues()">
           <option value="">전체 등급</option>
           <option value="ERROR">ERROR</option>
@@ -271,3 +238,6 @@
 
 </body>
 </html>
+
+
+

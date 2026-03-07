@@ -1,4 +1,4 @@
-﻿"""Dashboard routes for KRX data collection status visualization."""
+"""Dashboard routes for KRX data collection status visualization."""
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -165,14 +165,19 @@ async def get_instrument_options(
     request: Request,
     q: str = Query(""),
     limit: int = Query(20, ge=1, le=50),
+    offset: int = Query(0, ge=0),
+    include_total: bool = Query(True),
 ):
     repo = request.app.state.repo
     params: list = []
     where = ""
     if q:
-        pattern = f"%{q.strip()}%"
-        where = "WHERE i.external_code ILIKE %s OR i.instrument_name ILIKE %s"
-        params.extend([pattern, pattern])
+        query = q.strip()
+        # Prefix match for code search keeps index usage predictable on large tables.
+        code_pattern = f"{query}%"
+        name_pattern = f"{query}%"
+        where = "WHERE i.external_code LIKE %s OR i.instrument_name ILIKE %s"
+        params.extend([code_pattern, name_pattern])
 
     rows = repo.query(
         f"""
@@ -181,11 +186,30 @@ async def get_instrument_options(
         FROM instruments i
         {where}
         ORDER BY (i.delisting_date IS NULL) DESC, i.market_code ASC, i.external_code ASC
-        LIMIT %s
+        LIMIT %s OFFSET %s
         """,
-        tuple(params + [limit]),
+        tuple(params + [limit + 1, offset]),
     )
-    return rows
+    items = rows[:limit]
+    has_more = len(rows) > limit
+    total = None
+    if include_total:
+        total = repo.query(
+            f"""
+            SELECT COUNT(*) AS cnt
+            FROM instruments i
+            {where}
+            """,
+            tuple(params),
+        )[0]["cnt"]
+
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+    }
 
 
 @router.get("/api/v1/dashboard/instruments/{external_code}/profile")
@@ -221,9 +245,12 @@ async def get_prices(
     external_code: str = Query(""),
     date_from: str = Query(""),
     date_to: str = Query(""),
+    limit: int = Query(500, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
+    include_total: bool = Query(True),
 ):
     if not external_code:
-        return {"items": []}
+        return {"items": [], "total": 0, "limit": limit, "offset": offset, "has_more": False}
 
     repo = request.app.state.repo
     instrument = repo.query(
@@ -237,7 +264,7 @@ async def get_prices(
         (external_code.strip(),),
     )
     if not instrument:
-        return {"items": []}
+        return {"items": [], "total": 0, "limit": limit, "offset": offset, "has_more": False}
 
     params = [instrument[0]["instrument_id"]]
     where_clauses = ["instrument_id = %s"]
@@ -256,11 +283,30 @@ async def get_prices(
         FROM daily_market_data
         WHERE {where}
         ORDER BY trade_date DESC
-        LIMIT 500
+        LIMIT %s OFFSET %s
         """,
-        tuple(params),
+        tuple(params + [limit + 1, offset]),
     )
-    return {"items": rows}
+    items = rows[:limit]
+    has_more = len(rows) > limit
+    total = None
+    if include_total:
+        total = repo.query(
+            f"""
+            SELECT COUNT(*) AS cnt
+            FROM daily_market_data
+            WHERE {where}
+            """,
+            tuple(params),
+        )[0]["cnt"]
+
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+    }
 
 
 @router.get("/api/v1/dashboard/benchmarks")
@@ -311,12 +357,16 @@ async def get_benchmark_series(
     date_to: str = Query(""),
     limit: int = Query(1000, ge=1, le=10000),
     offset: int = Query(0, ge=0),
+    include_total: bool = Query(True),
 ):
-    if not series_name:
-        return {"items": [], "total": 0}
-
     repo = request.app.state.repo
-    params = [index_code, series_name]
+    resolved_series_name = str(series_name).strip()
+    if not resolved_series_name:
+        resolved_series_name = repo.get_default_benchmark_series(index_code)
+        if not resolved_series_name:
+            return {"items": [], "total": 0, "limit": limit, "offset": offset, "has_more": False}
+
+    params = [index_code, resolved_series_name]
     where_clauses = ["index_code = %s", "index_name = %s"]
     if date_from:
         where_clauses.append("trade_date >= %s")
@@ -326,15 +376,6 @@ async def get_benchmark_series(
         params.append(date_to)
     where = " AND ".join(where_clauses)
 
-    total = repo.query(
-        f"""
-        SELECT COUNT(*) as cnt
-        FROM benchmark_index_data
-        WHERE {where}
-        """,
-        tuple(params),
-    )[0]["cnt"]
-
     rows = repo.query(
         f"""
         SELECT trade_date, open, high, low, close, volume, change_rate, record_status
@@ -343,9 +384,29 @@ async def get_benchmark_series(
         ORDER BY trade_date DESC
         LIMIT %s OFFSET %s
         """,
-        tuple(params + [limit, offset]),
+        tuple(params + [limit + 1, offset]),
     )
-    return {"items": rows, "total": total}
+    items = rows[:limit]
+    has_more = len(rows) > limit
+
+    total = None
+    if include_total:
+        total = repo.query(
+            f"""
+            SELECT COUNT(*) as cnt
+            FROM benchmark_index_data
+            WHERE {where}
+            """,
+            tuple(params),
+        )[0]["cnt"]
+
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+    }
 
 
 @router.get("/api/v1/dashboard/quality-issues")
@@ -377,3 +438,4 @@ async def get_quality_issues(
         tuple(params),
     )
     return rows
+

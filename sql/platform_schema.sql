@@ -193,6 +193,8 @@ ADD CONSTRAINT fk_data_quality_issues_run
 FOREIGN KEY (run_id) REFERENCES collection_runs(run_id);
 
 CREATE INDEX idx_instruments_market_code ON instruments(market_code, external_code);
+CREATE INDEX idx_instruments_external_code ON instruments(external_code);
+CREATE INDEX idx_instruments_name ON instruments(instrument_name);
 CREATE INDEX idx_delisting_snapshot_market_date ON instrument_delisting_snapshot(market_code, delisting_date);
 CREATE INDEX idx_delisting_snapshot_external_code ON instrument_delisting_snapshot(external_code);
 CREATE INDEX idx_daily_trade_date ON daily_market_data(trade_date);

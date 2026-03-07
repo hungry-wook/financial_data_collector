@@ -45,8 +45,8 @@ tr:hover td { background: #f7fafc; }
   border-radius: 6px; font-size: .72rem; line-height: 1.35; pointer-events: none; box-shadow: 0 8px 30px rgba(15, 23, 42, .35); }
 .lw-tooltip .tt-date { font-weight: 700; margin-bottom: .3rem; color: #93c5fd; }
 
-.ma-panel { border: 1px solid #e2e8f0; border-radius: 8px; padding: .75rem; margin-bottom: 1rem; background: #f8fbff; display: grid; gap: .75rem; }
-.ma-group { display: grid; gap: .4rem; }
+.ma-panel { border: 1px solid #e2e8f0; border-radius: 8px; padding: .75rem; margin-bottom: 1rem; background: #f8fbff; display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); align-items: start; }
+.ma-group { display: grid; gap: .4rem; min-width: 0; }
 .ma-label { font-size: .75rem; font-weight: 600; color: #475569; }
 .ma-controls { display: flex; gap: .5rem; flex-wrap: wrap; }
 .ma-controls input { padding: .4rem .65rem; border: 1px solid #cbd5e1; border-radius: 6px; font-size: .82rem; width: 130px; }
@@ -57,7 +57,12 @@ tr:hover td { background: #f7fafc; }
 .ma-chip { display: inline-flex; align-items: center; gap: .4rem; border: 1px solid #cbd5e1; border-radius: 999px; background: #fff;
   color: #334155; padding: .2rem .55rem; font-size: .75rem; cursor: pointer; }
 .ma-chip strong { color: #dc2626; font-size: .8rem; line-height: 1; }
-.ma-error { color: #b91c1c; font-size: .78rem; font-weight: 600; }
+.ma-error { color: #b91c1c; font-size: .78rem; font-weight: 600; grid-column: 1 / -1; }
+.ma-bench-group { align-self: stretch; }
+.ma-bench-toggle { margin-bottom: 0; }
+.ma-bench-controls { margin-bottom: 0; }
+.ma-bench-controls select:first-child { min-width: 120px; }
+.ma-bench-controls select:nth-child(2) { min-width: 220px; flex: 1 1 220px; }
 .empty { text-align: center; padding: 2.5rem; color: #a0aec0; font-size: .9rem; }
 .loading { text-align: center; padding: 1.5rem; color: #718096; }
 .profile-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: .75rem; }
@@ -77,6 +82,9 @@ tr:hover td { background: #f7fafc; }
   main { padding: 1rem; }
   .chart-wrap { height: 340px; }
   .ma-controls input { width: 110px; }
+  .ma-panel { grid-template-columns: 1fr; }
+  .ma-bench-controls select:nth-child(2) { min-width: 0; }
   .picker-item { grid-template-columns: 80px 1fr; }
   .picker-market { justify-self: start; grid-column: 2 / 3; }
 }
+
