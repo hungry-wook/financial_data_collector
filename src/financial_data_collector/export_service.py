@@ -1,4 +1,4 @@
-import shutil
+﻿import shutil
 from dataclasses import asdict
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from uuid import uuid4
 
+from .adjustment_service import AdjustmentService
 from .parquet_writer import ParquetWriter
 from .repository import Repository
 
@@ -28,12 +29,15 @@ class ExportRequest:
     output_format: str
     output_path: str
     series_names: Optional[List[str]] = None
+    series_type: str = "raw"
+    as_of_timestamp: Optional[str] = None
 
 
 class ExportService:
-    def __init__(self, repo: Repository, writer: Optional[ParquetWriter] = None):
+    def __init__(self, repo: Repository, writer: Optional[ParquetWriter] = None, adjustment_service: Optional[AdjustmentService] = None):
         self.repo = repo
         self.writer = writer or ParquetWriter()
+        self.adjustment_service = adjustment_service or AdjustmentService(repo)
 
     def create_job(self, req: ExportRequest) -> Dict:
         self._validate_request(req)
@@ -68,7 +72,20 @@ class ExportService:
         temp_path.mkdir(parents=True, exist_ok=True)
 
         try:
-            instrument_rows = self.repo.get_core_market(req.market_codes, req.date_from, req.date_to)
+            if req.series_type in {"adjusted", "both"}:
+                self.adjustment_service.rebuild_factors(
+                    date_from=req.date_from,
+                    date_to=req.date_to,
+                    as_of_timestamp=req.as_of_timestamp,
+                )
+
+            instrument_rows = self.repo.get_core_market(
+                req.market_codes,
+                req.date_from,
+                req.date_to,
+                series_type=req.series_type,
+                as_of_timestamp=req.as_of_timestamp,
+            )
             benchmark_rows = self.repo.get_benchmark(
                 req.index_codes,
                 req.date_from,
@@ -96,6 +113,8 @@ class ExportService:
                 "market_codes": req.market_codes,
                 "index_codes": req.index_codes,
                 "series_names": req.series_names or [],
+                "series_type": req.series_type,
+                "as_of_timestamp": req.as_of_timestamp,
                 "date_from": req.date_from,
                 "date_to": req.date_to,
                 "schema_version": "phase1-v1",
@@ -195,4 +214,12 @@ class ExportService:
         if not req.index_codes:
             raise ValueError("index_codes is required")
 
+        req.series_type = str(req.series_type or "raw").strip().lower()
+        if req.series_type not in {"raw", "adjusted", "both"}:
+            raise ValueError("series_type must be one of: raw, adjusted, both")
 
+        if req.as_of_timestamp:
+            try:
+                date.fromisoformat(str(req.as_of_timestamp).split("T", 1)[0])
+            except ValueError as exc:
+                raise ValueError("as_of_timestamp must be ISO date or datetime") from exc

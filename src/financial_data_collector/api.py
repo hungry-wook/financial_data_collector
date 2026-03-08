@@ -1,4 +1,4 @@
-from typing import Dict, Tuple
+﻿from typing import Dict, Tuple
 
 from .export_service import ExportRequest, ExportService, ManifestUnavailableError
 
@@ -18,6 +18,8 @@ class BacktestExportAPI:
                 market_codes=market_codes,
                 index_codes=body["index_codes"],
                 series_names=body.get("series_names"),
+                series_type=body.get("series_type", "raw"),
+                as_of_timestamp=body.get("as_of_timestamp"),
                 date_from=body["date_from"],
                 date_to=body["date_to"],
                 include_issues=bool(body.get("include_issues", False)),
@@ -44,5 +46,3 @@ class BacktestExportAPI:
             return 404, {"error": str(exc)}
         except ManifestUnavailableError as exc:
             return 409, {"error": str(exc)}
-
-

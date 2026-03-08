@@ -11,6 +11,8 @@
 - 벌크 추출 API 규격: `BULK_EXPORT_API_SPEC.md`
 - 스키마 계약: `SCHEMA.md`
 - 범위 점검: `SCOPE_REVIEW.md`
+- 수정주가 구현 계획: `ADJUSTED_PRICE_IMPLEMENTATION_PLAN.md`
+- 수정주가 실행 백로그: `ADJUSTED_PRICE_BACKLOG.md`
 - 실행 DDL: `../sql/platform_schema.sql`
 
 ## 문서 역할
@@ -24,6 +26,10 @@
 : 테이블/뷰/제약의 계약 정의
 - `SCOPE_REVIEW.md`
 : 현재 스코프 적합성 점검 결과
+- `ADJUSTED_PRICE_IMPLEMENTATION_PLAN.md`
+: 배당 제외 수정주가 파이프라인 설계 및 단계별 롤아웃 계획
+- `ADJUSTED_PRICE_BACKLOG.md`
+: 우선순위 기반 구현 백로그와 완료 기준
 - `../sql/platform_schema.sql`
 : 적용 가능한 기준 DDL
 

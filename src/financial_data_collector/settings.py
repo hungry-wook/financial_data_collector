@@ -1,4 +1,4 @@
-import os
+﻿import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
@@ -41,5 +41,27 @@ class KRXSettings:
             missing.append("KRX_AUTH_KEY")
         if self.daily_limit <= 0:
             missing.append("KRX_DAILY_LIMIT(>0)")
+        if missing:
+            raise ValueError("Missing/invalid env: " + ", ".join(missing))
+
+
+@dataclass
+class OpenDARTSettings:
+    api_key: str
+    daily_limit: int
+
+    @classmethod
+    def from_env(cls) -> "OpenDARTSettings":
+        return cls(
+            api_key=os.getenv("OPEN_DART_API_KEY", "").strip(),
+            daily_limit=int(os.getenv("OPEN_DART_DAILY_LIMIT", "10000")),
+        )
+
+    def validate(self) -> None:
+        missing = []
+        if not self.api_key:
+            missing.append("OPEN_DART_API_KEY")
+        if self.daily_limit <= 0:
+            missing.append("OPEN_DART_DAILY_LIMIT(>0)")
         if missing:
             raise ValueError("Missing/invalid env: " + ", ".join(missing))
