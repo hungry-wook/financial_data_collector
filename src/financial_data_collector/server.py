@@ -1,4 +1,4 @@
-"""
+﻿"""
 FastAPI server for Backtest Export API
 Run with: uvicorn financial_data_collector.server:app --host 0.0.0.0 --port 8000
 """
@@ -24,6 +24,8 @@ class ExportRequestBody(BaseModel):
     market_code: str | None = None
     index_codes: list[str]
     series_names: list[str] | None = None
+    series_type: str = "raw"
+    as_of_timestamp: str | None = None
     date_from: str
     date_to: str
     include_issues: bool = False
@@ -132,4 +134,3 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
-

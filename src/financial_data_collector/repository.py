@@ -131,6 +131,100 @@ class Repository:
                 """
             )
 
+            conn.execute(
+                """
+                ALTER TABLE corporate_events
+                ADD COLUMN IF NOT EXISTS raw_factor NUMERIC(18,10) NULL
+                """
+            )
+            conn.execute(
+                """
+                ALTER TABLE corporate_events
+                ADD COLUMN IF NOT EXISTS confidence VARCHAR(20) NOT NULL DEFAULT 'MEDIUM'
+                """
+            )
+            conn.execute(
+                """
+                ALTER TABLE corporate_events
+                ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE'
+                """
+            )
+            conn.execute("ALTER TABLE corporate_events DROP CONSTRAINT IF EXISTS corporate_events_status_check")
+            conn.execute(
+                """
+                ALTER TABLE corporate_events
+                ADD CONSTRAINT corporate_events_status_check
+                CHECK (status IN ('ACTIVE', 'NEEDS_REVIEW', 'REJECTED'))
+                """
+            )
+            conn.execute("ALTER TABLE corporate_events DROP CONSTRAINT IF EXISTS corporate_events_confidence_check")
+            conn.execute(
+                """
+                ALTER TABLE corporate_events
+                ADD CONSTRAINT corporate_events_confidence_check
+                CHECK (confidence IN ('HIGH', 'MEDIUM', 'LOW'))
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_corporate_events_source_event_id
+                ON corporate_events(source_event_id)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS event_validation_results (
+                    validation_id BIGSERIAL PRIMARY KEY,
+                    source_event_id VARCHAR(120) NOT NULL,
+                    check_name VARCHAR(50) NOT NULL,
+                    result VARCHAR(20) NOT NULL,
+                    detail TEXT NULL,
+                    validated_at TIMESTAMP NOT NULL,
+                    CHECK (result IN ('MATCH', 'MISMATCH', 'PARSE_FAIL', 'SKIP'))
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS price_adjustment_factors (
+                    instrument_id UUID NOT NULL,
+                    trade_date DATE NOT NULL,
+                    as_of_date DATE NOT NULL DEFAULT DATE '9999-12-31',
+                    factor NUMERIC(18,10) NOT NULL,
+                    cumulative_factor NUMERIC(18,10) NOT NULL,
+                    factor_source VARCHAR(30) NOT NULL,
+                    confidence VARCHAR(20) NOT NULL DEFAULT 'MEDIUM',
+                    created_at TIMESTAMP NOT NULL,
+                    run_id UUID NULL,
+                    PRIMARY KEY (instrument_id, trade_date, as_of_date),
+                    CHECK (factor > 0),
+                    CHECK (cumulative_factor > 0),
+                    CHECK (confidence IN ('HIGH', 'MEDIUM', 'LOW'))
+                )
+                """
+            )
+            conn.execute("ALTER TABLE price_adjustment_factors DROP CONSTRAINT IF EXISTS fk_price_adjustment_factors_instrument")
+            conn.execute(
+                """
+                ALTER TABLE price_adjustment_factors
+                ADD CONSTRAINT fk_price_adjustment_factors_instrument
+                FOREIGN KEY (instrument_id) REFERENCES instruments(instrument_id)
+                """
+            )
+            conn.execute("ALTER TABLE price_adjustment_factors DROP CONSTRAINT IF EXISTS fk_price_adjustment_factors_run")
+            conn.execute(
+                """
+                ALTER TABLE price_adjustment_factors
+                ADD CONSTRAINT fk_price_adjustment_factors_run
+                FOREIGN KEY (run_id) REFERENCES collection_runs(run_id)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_price_adjustment_factors_trade_date
+                ON price_adjustment_factors(trade_date, as_of_date)
+                """
+            )
     def insert_run(self, run: Dict) -> None:
         with self.connect() as conn:
             conn.execute(
@@ -622,24 +716,125 @@ class Repository:
                 out.append(normalized)
             return out
 
-    def get_core_market(self, market_codes: Iterable[str], date_from: str, date_to: str) -> List[Dict]:
+    def get_core_market(
+        self,
+        market_codes: Iterable[str],
+        date_from: str,
+        date_to: str,
+        series_type: str = "raw",
+        as_of_timestamp: Optional[str] = None,
+    ) -> List[Dict]:
         codes = [str(c).upper() for c in market_codes if str(c).strip()]
         if not codes:
             return []
         placeholders = ", ".join(["%s"] * len(codes))
-        return self.query(
-            f"""
-            SELECT *
-            FROM core_market_dataset_v1
-            WHERE market_code IN ({placeholders})
-              AND trade_date BETWEEN %s AND %s
-              AND trade_date >= listing_date
-              AND (delisting_date IS NULL OR trade_date < delisting_date)
-            ORDER BY trade_date, market_code, instrument_id
-            """,
-            tuple(codes + [date_from, date_to]),
-        )
+        as_of_date = "9999-12-31"
+        if as_of_timestamp:
+            as_of_date = str(as_of_timestamp).strip().split("T", 1)[0]
 
+        normalized_series = str(series_type or "raw").strip().lower()
+        if normalized_series not in {"raw", "adjusted", "both"}:
+            raise ValueError("series_type must be one of: raw, adjusted, both")
+
+        if normalized_series == "raw":
+            select_clause = """
+            SELECT d.instrument_id,
+                   i.external_code,
+                   i.market_code,
+                   i.instrument_name,
+                   i.listing_date,
+                   i.delisting_date,
+                   d.trade_date,
+                   d.open,
+                   d.high,
+                   d.low,
+                   d.close,
+                   d.volume,
+                   d.turnover_value,
+                   d.market_value,
+                   d.is_trade_halted,
+                   d.is_under_supervision,
+                   d.record_status,
+                   d.source_name,
+                   d.collected_at
+            FROM daily_market_data d
+            JOIN instruments i ON i.instrument_id = d.instrument_id
+            """
+        elif normalized_series == "adjusted":
+            select_clause = """
+            SELECT d.instrument_id,
+                   i.external_code,
+                   i.market_code,
+                   i.instrument_name,
+                   i.listing_date,
+                   i.delisting_date,
+                   d.trade_date,
+                   d.open * COALESCE(p.cumulative_factor, 1.0) AS open,
+                   d.high * COALESCE(p.cumulative_factor, 1.0) AS high,
+                   d.low * COALESCE(p.cumulative_factor, 1.0) AS low,
+                   d.close * COALESCE(p.cumulative_factor, 1.0) AS close,
+                   d.volume,
+                   d.turnover_value,
+                   d.market_value,
+                   d.is_trade_halted,
+                   d.is_under_supervision,
+                   d.record_status,
+                   d.source_name,
+                   d.collected_at
+            FROM daily_market_data d
+            JOIN instruments i ON i.instrument_id = d.instrument_id
+            LEFT JOIN price_adjustment_factors p
+              ON p.instrument_id = d.instrument_id
+             AND p.trade_date = d.trade_date
+             AND p.as_of_date = %s
+            """
+        else:
+            select_clause = """
+            SELECT d.instrument_id,
+                   i.external_code,
+                   i.market_code,
+                   i.instrument_name,
+                   i.listing_date,
+                   i.delisting_date,
+                   d.trade_date,
+                   d.open,
+                   d.high,
+                   d.low,
+                   d.close,
+                   d.open * COALESCE(p.cumulative_factor, 1.0) AS adj_open,
+                   d.high * COALESCE(p.cumulative_factor, 1.0) AS adj_high,
+                   d.low * COALESCE(p.cumulative_factor, 1.0) AS adj_low,
+                   d.close * COALESCE(p.cumulative_factor, 1.0) AS adj_close,
+                   d.volume,
+                   d.turnover_value,
+                   d.market_value,
+                   d.is_trade_halted,
+                   d.is_under_supervision,
+                   d.record_status,
+                   d.source_name,
+                   d.collected_at
+            FROM daily_market_data d
+            JOIN instruments i ON i.instrument_id = d.instrument_id
+            LEFT JOIN price_adjustment_factors p
+              ON p.instrument_id = d.instrument_id
+             AND p.trade_date = d.trade_date
+             AND p.as_of_date = %s
+            """
+
+        sql_text = f"""
+            {select_clause}
+            WHERE i.market_code IN ({placeholders})
+              AND d.trade_date BETWEEN %s AND %s
+              AND d.trade_date >= i.listing_date
+              AND (i.delisting_date IS NULL OR d.trade_date < i.delisting_date)
+            ORDER BY d.trade_date, i.market_code, d.instrument_id
+        """
+        params: List = []
+        if normalized_series in {"adjusted", "both"}:
+            params.append(as_of_date)
+        params.extend(codes)
+        params.extend([date_from, date_to])
+        return self.query(sql_text, tuple(params))
     def get_signal_market(
         self,
         market_codes: Iterable[str],
@@ -819,6 +1014,251 @@ class Repository:
             (date_from, date_to),
         )
 
+    def upsert_corporate_events(self, rows: Iterable[Dict]) -> int:
+        payload = [
+            (
+                r["event_id"],
+                int(r.get("event_version", 1)),
+                r["instrument_id"],
+                r["event_type"],
+                r.get("announce_date"),
+                r.get("effective_date"),
+                r.get("source_event_id"),
+                r["source_name"],
+                r["collected_at"],
+                r.get("run_id"),
+                r.get("raw_factor"),
+                r.get("confidence", "MEDIUM"),
+                r.get("status", "ACTIVE"),
+                Json(r.get("payload")) if r.get("payload") is not None else None,
+            )
+            for r in rows
+        ]
+        if not payload:
+            return 0
+
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO corporate_events(
+                        event_id, event_version, instrument_id, event_type,
+                        announce_date, effective_date, source_event_id,
+                        source_name, collected_at, run_id,
+                        raw_factor, confidence, status, payload
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT(event_id, event_version) DO UPDATE SET
+                        instrument_id=excluded.instrument_id,
+                        event_type=excluded.event_type,
+                        announce_date=excluded.announce_date,
+                        effective_date=excluded.effective_date,
+                        source_event_id=excluded.source_event_id,
+                        source_name=excluded.source_name,
+                        collected_at=excluded.collected_at,
+                        run_id=excluded.run_id,
+                        raw_factor=excluded.raw_factor,
+                        confidence=excluded.confidence,
+                        status=excluded.status,
+                        payload=excluded.payload
+                    """,
+                    payload,
+                )
+        return len(payload)
+
+    def insert_event_validation_results(self, rows: Iterable[Dict]) -> int:
+        payload = [
+            (
+                r["source_event_id"],
+                r["check_name"],
+                r["result"],
+                r.get("detail"),
+                r["validated_at"],
+            )
+            for r in rows
+        ]
+        if not payload:
+            return 0
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO event_validation_results(
+                        source_event_id, check_name, result, detail, validated_at
+                    ) VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    payload,
+                )
+        return len(payload)
+
+    def upsert_price_adjustment_factors(self, rows: Iterable[Dict]) -> int:
+        payload = [
+            (
+                r["instrument_id"],
+                r["trade_date"],
+                r.get("as_of_date", "9999-12-31"),
+                r["factor"],
+                r["cumulative_factor"],
+                r.get("factor_source", "corporate_event"),
+                r.get("confidence", "MEDIUM"),
+                r["created_at"],
+                r.get("run_id"),
+            )
+            for r in rows
+        ]
+        if not payload:
+            return 0
+
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO price_adjustment_factors(
+                        instrument_id, trade_date, as_of_date,
+                        factor, cumulative_factor, factor_source,
+                        confidence, created_at, run_id
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT(instrument_id, trade_date, as_of_date) DO UPDATE SET
+                        factor=excluded.factor,
+                        cumulative_factor=excluded.cumulative_factor,
+                        factor_source=excluded.factor_source,
+                        confidence=excluded.confidence,
+                        created_at=excluded.created_at,
+                        run_id=excluded.run_id
+                    """,
+                    payload,
+                )
+        return len(payload)
+
+    def clear_price_adjustment_factors(self, date_from: str, date_to: str, as_of_date: str = "9999-12-31") -> int:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                DELETE FROM price_adjustment_factors
+                WHERE trade_date BETWEEN %s AND %s
+                  AND as_of_date = %s
+                """,
+                (date_from, date_to, as_of_date),
+            )
+            return int(cur.rowcount or 0)
+
+    def get_corporate_events_for_period(
+        self,
+        date_from: str,
+        date_to: str,
+        as_of_date: Optional[str] = None,
+        statuses: Optional[Iterable[str]] = None,
+    ) -> List[Dict]:
+        status_values = [str(s).upper() for s in (statuses or ["ACTIVE"]) if str(s).strip()]
+        if not status_values:
+            status_values = ["ACTIVE"]
+        status_placeholders = ", ".join(["%s"] * len(status_values))
+        params: List = [date_from, date_to, *status_values]
+        as_of_clause = ""
+        if as_of_date:
+            as_of_clause = " AND COALESCE(announce_date, effective_date) <= %s"
+            params.append(as_of_date)
+
+        return self.query(
+            f"""
+            SELECT instrument_id, event_type, announce_date, effective_date,
+                   source_event_id, raw_factor, confidence, status, payload
+            FROM corporate_events
+            WHERE effective_date BETWEEN %s AND %s
+              AND status IN ({status_placeholders})
+              {as_of_clause}
+            ORDER BY instrument_id, effective_date, event_id, event_version
+            """,
+            tuple(params),
+        )
+
+    def get_market_trade_dates(self, date_from: str, date_to: str) -> List[Dict]:
+        return self.query(
+            """
+            SELECT instrument_id, trade_date
+            FROM daily_market_data
+            WHERE trade_date BETWEEN %s AND %s
+            ORDER BY instrument_id, trade_date
+            """,
+            (date_from, date_to),
+        )
+
+    def get_instrument_id_by_external_code(self, external_code: str, market_code: Optional[str] = None) -> Optional[str]:
+        if not external_code:
+            return None
+        if market_code:
+            rows = self.query(
+                """
+                SELECT instrument_id
+                FROM instruments
+                WHERE external_code = %s AND market_code = %s
+                LIMIT 1
+                """,
+                (external_code, str(market_code).upper()),
+            )
+        else:
+            rows = self.query(
+                """
+                SELECT instrument_id
+                FROM instruments
+                WHERE external_code = %s
+                ORDER BY listing_date DESC
+                LIMIT 1
+                """,
+                (external_code,),
+            )
+        return rows[0]["instrument_id"] if rows else None
+
+
+    def get_instrument_id_by_corp_code_history(self, corp_code: str) -> Optional[str]:
+        if not corp_code:
+            return None
+        rows = self.query(
+            """
+            SELECT instrument_id
+            FROM corporate_events
+            WHERE payload->>'corp_code' = %s
+            ORDER BY collected_at DESC
+            LIMIT 1
+            """,
+            (corp_code,),
+        )
+        return rows[0]["instrument_id"] if rows else None
+
+    def get_latest_factor_for_chain(self, corp_code: str, event_type: str, revision_anchor: str) -> Optional[float]:
+        if not corp_code or not event_type or not revision_anchor:
+            return None
+        rows = self.query(
+            """
+            SELECT raw_factor
+            FROM corporate_events
+            WHERE payload->>'corp_code' = %s
+              AND event_type = %s
+              AND payload->>'revision_anchor' = %s
+              AND status = 'ACTIVE'
+              AND raw_factor IS NOT NULL
+            ORDER BY collected_at DESC
+            LIMIT 1
+            """,
+            (corp_code, event_type, revision_anchor),
+        )
+        if not rows:
+            return None
+        try:
+            return float(rows[0]["raw_factor"])
+        except (TypeError, ValueError):
+            return None
+    def delete_corporate_events_by_source_ids(self, source_event_ids: Iterable[str]) -> int:
+        ids = [str(x).strip() for x in source_event_ids if str(x).strip()]
+        if not ids:
+            return 0
+        placeholders = ", ".join(["%s"] * len(ids))
+        with self.connect() as conn:
+            cur = conn.execute(
+                f"DELETE FROM corporate_events WHERE source_event_id IN ({placeholders})",
+                tuple(ids),
+            )
+            return int(cur.rowcount or 0)
+
     def resolve_halted_issues(self, resolved_at: Optional[str] = None) -> int:
         resolved_time = resolved_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         with self.connect() as conn:
@@ -834,6 +1274,8 @@ class Repository:
                 (resolved_time,),
             )
             return int(cur.rowcount or 0)
+
+
 
 
 

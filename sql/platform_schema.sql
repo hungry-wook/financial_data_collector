@@ -520,3 +520,110 @@ COMMENT ON COLUMN snapshot_runs.run_id IS 'Included ingestion run identifier.';
 COMMENT ON VIEW core_market_dataset_v1 IS 'Phase 1 consumer view for instrument daily data with master attributes.';
 COMMENT ON VIEW benchmark_dataset_v1 IS 'Phase 1 consumer view for benchmark daily index data.';
 COMMENT ON VIEW trading_calendar_v1 IS 'Phase 1 consumer view for trading calendar data.';
+
+-- =====================================================
+-- Adjusted Price Pipeline (additive)
+-- =====================================================
+
+ALTER TABLE corporate_events
+ADD COLUMN IF NOT EXISTS raw_factor NUMERIC(18,10) NULL;
+
+ALTER TABLE corporate_events
+ADD COLUMN IF NOT EXISTS confidence VARCHAR(20) NOT NULL DEFAULT 'MEDIUM';
+
+ALTER TABLE corporate_events
+ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE';
+
+ALTER TABLE corporate_events
+DROP CONSTRAINT IF EXISTS corporate_events_status_check;
+
+ALTER TABLE corporate_events
+ADD CONSTRAINT corporate_events_status_check
+CHECK (status IN ('ACTIVE', 'NEEDS_REVIEW', 'REJECTED'));
+
+ALTER TABLE corporate_events
+DROP CONSTRAINT IF EXISTS corporate_events_confidence_check;
+
+ALTER TABLE corporate_events
+ADD CONSTRAINT corporate_events_confidence_check
+CHECK (confidence IN ('HIGH', 'MEDIUM', 'LOW'));
+
+CREATE INDEX IF NOT EXISTS idx_corporate_events_source_event_id ON corporate_events(source_event_id);
+
+CREATE TABLE IF NOT EXISTS event_validation_results (
+    validation_id BIGSERIAL PRIMARY KEY,
+    source_event_id VARCHAR(120) NOT NULL,
+    check_name VARCHAR(50) NOT NULL,
+    result VARCHAR(20) NOT NULL,
+    detail TEXT NULL,
+    validated_at TIMESTAMP NOT NULL,
+    CHECK (result IN ('MATCH', 'MISMATCH', 'PARSE_FAIL', 'SKIP'))
+);
+
+CREATE TABLE IF NOT EXISTS price_adjustment_factors (
+    instrument_id UUID NOT NULL,
+    trade_date DATE NOT NULL,
+    as_of_date DATE NOT NULL DEFAULT DATE '9999-12-31',
+    factor NUMERIC(18,10) NOT NULL,
+    cumulative_factor NUMERIC(18,10) NOT NULL,
+    factor_source VARCHAR(30) NOT NULL,
+    confidence VARCHAR(20) NOT NULL DEFAULT 'MEDIUM',
+    created_at TIMESTAMP NOT NULL,
+    run_id UUID NULL,
+    PRIMARY KEY (instrument_id, trade_date, as_of_date),
+    CHECK (factor > 0),
+    CHECK (cumulative_factor > 0),
+    CHECK (confidence IN ('HIGH', 'MEDIUM', 'LOW'))
+);
+
+ALTER TABLE price_adjustment_factors
+DROP CONSTRAINT IF EXISTS fk_price_adjustment_factors_instrument;
+
+ALTER TABLE price_adjustment_factors
+ADD CONSTRAINT fk_price_adjustment_factors_instrument
+FOREIGN KEY (instrument_id) REFERENCES instruments(instrument_id);
+
+ALTER TABLE price_adjustment_factors
+DROP CONSTRAINT IF EXISTS fk_price_adjustment_factors_run;
+
+ALTER TABLE price_adjustment_factors
+ADD CONSTRAINT fk_price_adjustment_factors_run
+FOREIGN KEY (run_id) REFERENCES collection_runs(run_id);
+
+CREATE INDEX IF NOT EXISTS idx_price_adjustment_factors_trade_date
+ON price_adjustment_factors(trade_date, as_of_date);
+
+DROP VIEW IF EXISTS core_market_dataset_v2;
+
+CREATE VIEW core_market_dataset_v2 AS
+SELECT d.instrument_id,
+       i.external_code,
+       i.market_code,
+       i.instrument_name,
+       i.listing_date,
+       i.delisting_date,
+       d.trade_date,
+       d.open AS raw_open,
+       d.high AS raw_high,
+       d.low AS raw_low,
+       d.close AS raw_close,
+       d.volume AS raw_volume,
+       COALESCE(p.cumulative_factor, 1.0) AS cumulative_factor,
+       d.open * COALESCE(p.cumulative_factor, 1.0) AS adj_open,
+       d.high * COALESCE(p.cumulative_factor, 1.0) AS adj_high,
+       d.low * COALESCE(p.cumulative_factor, 1.0) AS adj_low,
+       d.close * COALESCE(p.cumulative_factor, 1.0) AS adj_close,
+       d.volume,
+       d.turnover_value,
+       d.market_value,
+       d.is_trade_halted,
+       d.is_under_supervision,
+       d.record_status,
+       d.source_name,
+       d.collected_at
+FROM daily_market_data d
+JOIN instruments i ON i.instrument_id = d.instrument_id
+LEFT JOIN price_adjustment_factors p
+  ON p.instrument_id = d.instrument_id
+ AND p.trade_date = d.trade_date
+ AND p.as_of_date = DATE '9999-12-31';
