@@ -462,6 +462,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    load_dotenv(".env")
     parser = _build_parser()
     args = parser.parse_args()
 

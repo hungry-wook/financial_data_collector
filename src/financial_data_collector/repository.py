@@ -2,6 +2,7 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+import time
 from typing import Dict, Iterable, List, Optional
 from uuid import UUID
 
@@ -23,7 +24,20 @@ class Repository:
 
     @contextmanager
     def connect(self):
-        conn = psycopg.connect(self.database_url, row_factory=dict_row)
+        conn = None
+        last_error = None
+        for attempt in range(3):
+            try:
+                conn = psycopg.connect(self.database_url, row_factory=dict_row)
+                break
+            except psycopg.OperationalError as exc:
+                last_error = exc
+                if attempt == 2:
+                    raise
+                # Burst reconnects on Windows can transiently fail with socket exhaustion.
+                time.sleep(0.05 * (attempt + 1))
+        if conn is None:
+            raise last_error
         try:
             if self.schema:
                 conn.execute(sql.SQL("SET search_path TO {}").format(sql.Identifier(self.schema)))
@@ -1194,6 +1208,21 @@ class Repository:
         if not rows:
             return None
         return rows[0].get("latest_trade_date")
+
+    def get_existing_instrument_ids(self, instrument_ids: Iterable[str]) -> set[str]:
+        ids = [str(x).strip() for x in instrument_ids if str(x).strip()]
+        if not ids:
+            return set()
+        placeholders = ", ".join(["%s"] * len(ids))
+        rows = self.query(
+            f"""
+            SELECT instrument_id
+            FROM instruments
+            WHERE instrument_id IN ({placeholders})
+            """,
+            tuple(ids),
+        )
+        return {str(row["instrument_id"]) for row in rows if row.get("instrument_id")}
 
     def get_instrument_id_by_external_code(self, external_code: str, market_code: Optional[str] = None) -> Optional[str]:
         if not external_code:

@@ -201,12 +201,13 @@ class DailyMarketCollector:
         if normalized:
             # Backfill minimal instrument master rows when daily rows arrive first.
             instrument_ids = {r["instrument_id"] for r in normalized if r.get("instrument_id")}
+            existing_instrument_ids = self.repo.get_existing_instrument_ids(instrument_ids)
+            samples_by_instrument_id = {
+                r["instrument_id"]: r for r in normalized if r.get("instrument_id")
+            }
             missing_rows = []
-            for iid in instrument_ids:
-                exists = self.repo.query("SELECT 1 AS ok FROM instruments WHERE instrument_id = %s LIMIT 1", (iid,))
-                if exists:
-                    continue
-                sample = next((r for r in normalized if r.get("instrument_id") == iid), None)
+            for iid in instrument_ids - existing_instrument_ids:
+                sample = samples_by_instrument_id.get(iid)
                 if not sample:
                     continue
                 external_code = str(sample.get("external_code") or iid)[:20]
