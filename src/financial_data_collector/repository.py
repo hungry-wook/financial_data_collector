@@ -1,4 +1,4 @@
-﻿from contextlib import contextmanager
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -1027,6 +1027,65 @@ class Repository:
             ORDER BY detected_at
             """,
             (date_from, date_to),
+        )
+
+    def get_adjustment_factor_gaps(
+        self,
+        market_codes: Iterable[str],
+        date_from: str,
+        date_to: str,
+        as_of_timestamp: Optional[str] = None,
+        event_types: Optional[Iterable[str]] = None,
+    ) -> List[Dict]:
+        codes = [str(c).upper() for c in market_codes if str(c).strip()]
+        types = [str(t).upper() for t in (event_types or []) if str(t).strip()]
+        if not codes or not types:
+            return []
+
+        market_placeholders = ", ".join(["%s"] * len(codes))
+        type_placeholders = ", ".join(["%s"] * len(types))
+        as_of_date = "9999-12-31"
+        params: List = list(codes) + list(types) + [date_to]
+        as_of_clause = ""
+        if as_of_timestamp:
+            as_of_date = str(as_of_timestamp).strip().split("T", 1)[0]
+            as_of_clause = " AND COALESCE(e.announce_date, e.effective_date) <= %s"
+            params.append(as_of_date)
+        params.extend([date_from, date_to, as_of_date])
+
+        return self.query(
+            f"""
+            WITH eligible_instruments AS (
+                SELECT DISTINCT e.instrument_id
+                FROM corporate_events e
+                JOIN instruments i ON i.instrument_id = e.instrument_id
+                WHERE i.market_code IN ({market_placeholders})
+                  AND e.status = 'ACTIVE'
+                  AND e.event_type IN ({type_placeholders})
+                  AND e.effective_date IS NOT NULL
+                  AND e.effective_date <= %s
+                  {as_of_clause}
+            )
+            SELECT d.instrument_id,
+                   i.external_code,
+                   i.market_code,
+                   COUNT(*) AS missing_trade_dates,
+                   MIN(d.trade_date) AS first_missing_trade_date,
+                   MAX(d.trade_date) AS last_missing_trade_date
+            FROM eligible_instruments ei
+            JOIN daily_market_data d
+              ON d.instrument_id = ei.instrument_id
+             AND d.trade_date BETWEEN %s AND %s
+            JOIN instruments i ON i.instrument_id = d.instrument_id
+            LEFT JOIN price_adjustment_factors p
+              ON p.instrument_id = d.instrument_id
+             AND p.trade_date = d.trade_date
+             AND p.as_of_date = %s
+            WHERE p.instrument_id IS NULL
+            GROUP BY d.instrument_id, i.external_code, i.market_code
+            ORDER BY missing_trade_dates DESC, d.instrument_id
+            """,
+            tuple(params),
         )
 
     def upsert_corporate_events(self, rows: Iterable[Dict]) -> int:

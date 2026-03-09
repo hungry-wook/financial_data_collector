@@ -1,4 +1,4 @@
-﻿import shutil
+import shutil
 from dataclasses import asdict
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -10,8 +10,22 @@ from .adjustment_service import AdjustmentService
 from .parquet_writer import ParquetWriter
 from .repository import Repository
 
+STRICT_ADJUSTMENT_EVENT_TYPES = (
+    "BONUS_ISSUE",
+    "CAPITAL_REDUCTION",
+    "SPLIT",
+    "SPLIT_MERGER",
+    "MERGER",
+    "STOCK_SWAP",
+    "STOCK_TRANSFER",
+)
+
 
 class ManifestUnavailableError(RuntimeError):
+    pass
+
+
+class AdjustedExportCoverageError(RuntimeError):
     pass
 
 
@@ -72,6 +86,7 @@ class ExportService:
         temp_path.mkdir(parents=True, exist_ok=True)
 
         try:
+            self._assert_adjusted_factor_coverage(req)
             instrument_rows = self.repo.get_core_market(
                 req.market_codes,
                 req.date_from,
@@ -184,6 +199,26 @@ class ExportService:
         if job is None:
             raise KeyError(f"Unknown job_id={job_id}")
         return job
+
+    def _assert_adjusted_factor_coverage(self, req: ExportRequest) -> None:
+        if req.series_type not in {"adjusted", "both"}:
+            return
+        missing = self.repo.get_adjustment_factor_gaps(
+            market_codes=req.market_codes,
+            date_from=req.date_from,
+            date_to=req.date_to,
+            as_of_timestamp=req.as_of_timestamp,
+            event_types=STRICT_ADJUSTMENT_EVENT_TYPES,
+        )
+        if not missing:
+            return
+        preview = ", ".join(
+            f"{row['external_code']}:{row['missing_trade_dates']}[{row['first_missing_trade_date']}..{row['last_missing_trade_date']}]"
+            for row in missing[:5]
+        )
+        raise AdjustedExportCoverageError(
+            f"adjusted export requires materialized factors for all eligible rows; missing coverage for {len(missing)} instrument(s): {preview}"
+        )
 
     @staticmethod
     def _validate_request(req: ExportRequest) -> None:
