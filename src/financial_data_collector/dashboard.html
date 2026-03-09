@@ -54,28 +54,76 @@
 
     <div class="section">
       <h2>최근 수집 이력</h2>
+      <div class="controls">
+        <select x-model="runPipelineFilter" @change="loadRuns()">
+          <option value="">전체 파이프라인</option>
+          <option value="collect-dart-corporate-events">DART corporate events</option>
+          <option value="phase1">KRX phase1</option>
+          <option value="collect-dart-events">DART filings</option>
+          <option value="phase1-collect-delisting-kind">KIND delisting</option>
+        </select>
+        <select x-model="runSourceFilter" @change="loadRuns()">
+          <option value="">전체 소스</option>
+          <option value="opendart">opendart</option>
+          <option value="krx">krx</option>
+          <option value="kind">kind</option>
+        </select>
+        <select x-model="runStatusFilter" @change="loadRuns()">
+          <option value="">전체 상태</option>
+          <option value="SUCCESS">SUCCESS</option>
+          <option value="PARTIAL">PARTIAL</option>
+          <option value="FAILED">FAILED</option>
+          <option value="RUNNING">RUNNING</option>
+        </select>
+      </div>
+      <div class="cards subcards">
+        <div class="card compact"><div class="label">DART Run</div><div class="value small" x-text="fmt(dartRunSummary().total)"></div></div>
+        <div class="card compact"><div class="label">Rebuild OK</div><div class="value small" x-text="fmt(dartRunSummary().succeeded)"></div></div>
+        <div class="card compact"><div class="label">Rebuild Skip</div><div class="value small" x-text="fmt(dartRunSummary().skipped)"></div></div>
+        <div class="card compact"><div class="label">Failed</div><div class="value small" x-text="fmt(dartRunSummary().failed)"></div></div>
+      </div>
       <div x-show="runsLoading" class="loading">로딩 중...</div>
       <div x-show="!runsLoading && runs.length === 0" class="empty">수집 이력이 없습니다</div>
       <table x-show="!runsLoading && runs.length > 0">
         <thead>
           <tr>
             <th>파이프라인</th><th>소스</th><th>기간</th><th>상태</th>
-            <th>시작시각</th><th>소요(초)</th><th>성공</th><th>실패</th><th>경고</th>
+            <th>시작시각</th><th>소요(초)</th><th>성공</th><th>실패</th><th>경고</th><th>Details</th>
           </tr>
         </thead>
         <tbody>
           <template x-for="r in runs" :key="r.run_id">
-            <tr>
-              <td x-text="r.pipeline_name"></td>
-              <td x-text="r.source_name"></td>
-              <td x-text="r.window_start + ' ~ ' + r.window_end"></td>
-              <td><span :class="statusBadge(r.status)" x-text="r.status"></span></td>
-              <td x-text="r.started_at ? r.started_at.slice(0,19) : ''"></td>
-              <td x-text="elapsed(r.started_at, r.finished_at)"></td>
-              <td x-text="r.success_count"></td>
-              <td x-text="r.failure_count"></td>
-              <td x-text="r.warning_count"></td>
-            </tr>
+            <template>
+              <tr>
+                <td x-text="r.pipeline_name"></td>
+                <td x-text="r.source_name"></td>
+                <td x-text="r.window_start + ' ~ ' + r.window_end"></td>
+                <td><span :class="statusBadge(r.status)" x-text="r.status"></span></td>
+                <td x-text="r.started_at ? r.started_at.slice(0,19) : ''"></td>
+                <td x-text="elapsed(r.started_at, r.finished_at)"></td>
+                <td x-text="r.success_count"></td>
+                <td x-text="r.failure_count"></td>
+                <td x-text="r.warning_count"></td>
+                <td>
+                  <div class="run-detail-cell">
+                    <div class="run-meta-summary" x-text="runMetadataSummary(r)"></div>
+                    <button class="link-btn" x-show="r.metadata" @click="toggleRunDetails(r.run_id)" x-text="isRunExpanded(r.run_id) ? 'hide' : 'show'"></button>
+                  </div>
+                </td>
+              </tr>
+              <tr x-show="isRunExpanded(r.run_id) && r.metadata" class="run-detail-row">
+                <td colspan="10">
+                  <div class="run-meta-grid">
+                    <template x-for="entry in metadataEntries(r.metadata)" :key="r.run_id + ':' + entry.key">
+                      <div class="run-meta-item">
+                        <div class="run-meta-key" x-text="entry.key"></div>
+                        <div class="run-meta-value" x-text="entry.value"></div>
+                      </div>
+                    </template>
+                  </div>
+                </td>
+              </tr>
+            </template>
           </template>
         </tbody>
       </table>

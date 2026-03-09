@@ -1,5 +1,5 @@
 ﻿from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date, timedelta
 from typing import Dict, Iterable, List, Optional
 
 from .repository import Repository
@@ -12,6 +12,17 @@ def _utc_now_iso() -> str:
 class AdjustmentService:
     def __init__(self, repo: Repository):
         self.repo = repo
+
+    @staticmethod
+    def compute_impacted_window(date_from: str, latest_trade_date: Optional[str], overlap_days: int = 7) -> Optional[Dict[str, str]]:
+        if not latest_trade_date:
+            return None
+        start = date.fromisoformat(str(date_from)) - timedelta(days=max(overlap_days, 0))
+        end = date.fromisoformat(str(latest_trade_date))
+        if start > end:
+            start = end
+        return {"date_from": start.isoformat(), "date_to": end.isoformat()}
+
 
     @staticmethod
     def _resolve_event_factor(event: Dict) -> Optional[float]:
@@ -102,4 +113,12 @@ class AdjustmentService:
 
         self.repo.clear_price_adjustment_factors(date_from=date_from, date_to=date_to, as_of_date=as_of_date)
         upserted = self.repo.upsert_price_adjustment_factors(rows)
-        return {"events": len(events), "trade_dates": len(trade_dates), "factors": upserted}
+        instrument_count = len(trade_dates_by_instrument)
+        event_date_count = sum(len(by_date) for by_date in events_by_instrument_date.values())
+        return {
+            "events": len(events),
+            "trade_dates": len(trade_dates),
+            "factors": upserted,
+            "instrument_count": instrument_count,
+            "event_date_count": event_date_count,
+        }

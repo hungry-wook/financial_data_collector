@@ -1,6 +1,6 @@
 ﻿from datetime import date
 
-from financial_data_collector.collect_dart_corporate_events import collect_corporate_events
+from financial_data_collector.collect_dart_corporate_events import collect_corporate_events, collect_corporate_events_and_rebuild_factors, repair_corporate_event_timings, run_dart_corporate_event_collection
 from financial_data_collector.collectors import InstrumentCollector
 
 BONUS_REPORT = "\uC8FC\uC694\uC0AC\uD56D\uBCF4\uACE0\uC11C(\uBB34\uC0C1\uC99D\uC790\uACB0\uC815)"
@@ -40,7 +40,7 @@ class _FakeClient:
 
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("a.html", "<html><body>\uBB34\uC0C1\uC99D\uC790 1\uC8FC\uB2F9 0.5\uC8FC \uBC30\uC815</body></html>")
+            zf.writestr("a.html", "<html><body>\uBB34\uC0C1\uC99D\uC790 1\uC8FC\uB2F9 0.5\uC8FC \uBC30\uC815 \uC2E0\uC8FC \uC0C1\uC7A5 \uC608\uC815\uC77C 2026\uB144 03\uC6D4 08\uC77C</body></html>")
         return buf.getvalue()
 
 
@@ -160,9 +160,111 @@ class _FakeRemoteChainClient(_FakeClient):
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr(
                 "a.html",
-                "<html><body>\uC720\uC0C1\uC99D\uC790 \uACB0\uC815 1. \uC2E0\uC8FC\uC758 \uC885\uB958\uC640 \uC218 \uBCF4\uD1B5\uC8FC\uC2DD (\uC8FC) 100 2. 1\uC8FC\uB2F9 \uC561\uBA74\uAC00\uC561 (\uC6D0) 500 3. \uC99D\uC790\uC804 \uBC1C\uD589\uC8FC\uC2DD\uCD1D\uC218 (\uC8FC) \uBCF4\uD1B5\uC8FC\uC2DD (\uC8FC) 900</body></html>",
+                "<html><body>\uC720\uC0C1\uC99D\uC790 \uACB0\uC815 1. \uC2E0\uC8FC\uC758 \uC885\uB958\uC640 \uC218 \uBCF4\uD1B5\uC8FC\uC2DD (\uC8FC) 100 2. 1\uC8FC\uB2F9 \uC561\uBA74\uAC00\uC561 (\uC6D0) 500 3. \uC99D\uC790\uC804 \uBC1C\uD589\uC8FC\uC2DD\uCD1D\uC218 (\uC8FC) \uBCF4\uD1B5\uC8FC\uC2DD (\uC8FC) 900 \uC2E0\uC8FC \uC0C1\uC7A5 \uC608\uC815\uC77C 2026\uB144 03\uC6D4 08\uC77C</body></html>",
             )
         return buf.getvalue()
+
+
+class _FakeThirdPartyRightsClient(_FakeClient):
+    def list_filings(self, **kwargs):
+        self.calls.append(("list", kwargs))
+        return {
+            "status": "000",
+            "total_count": 1,
+            "list": [
+                {
+                    "corp_code": "x",
+                    "corp_name": KORP,
+                    "stock_code": "123456",
+                    "corp_cls": "K",
+                    "report_nm": RIGHTS_REPORT,
+                    "rcept_no": "20260308000006",
+                    "rcept_dt": "20260308",
+                }
+            ],
+        }
+
+    def get_rights_issue_disclosures(self, **kwargs):
+        self.calls.append(("ds005", kwargs))
+        return {
+            "status": "000",
+            "list": [
+                {
+                    "rcept_no": "20260308000006",
+                    "ic_mthn": "\uC81C3\uC790\uBC30\uC815\uC99D\uC790",
+                    "bfic_tisstk_ostk": "900",
+                    "nstk_ostk_cnt": "100",
+                }
+            ],
+        }
+
+
+class _FakePublicRightsClient(_FakeClient):
+    def list_filings(self, **kwargs):
+        self.calls.append(("list", kwargs))
+        return {
+            "status": "000",
+            "total_count": 1,
+            "list": [
+                {
+                    "corp_code": "x",
+                    "corp_name": KORP,
+                    "stock_code": "123456",
+                    "corp_cls": "K",
+                    "report_nm": RIGHTS_REPORT,
+                    "rcept_no": "20260308000008",
+                    "rcept_dt": "20260308",
+                }
+            ],
+        }
+
+    def get_rights_issue_disclosures(self, **kwargs):
+        self.calls.append(("ds005", kwargs))
+        return {
+            "status": "000",
+            "list": [
+                {
+                    "rcept_no": "20260308000008",
+                    "ic_mthn": "\uC77C\uBC18\uACF5\uBAA8\uC99D\uC790",
+                    "bfic_tisstk_ostk": "900",
+                    "nstk_ostk_cnt": "100",
+                }
+            ],
+        }
+
+
+class _FakeCapitalReductionDs005Client(_FakeClient):
+    def list_filings(self, **kwargs):
+        self.calls.append(("list", kwargs))
+        return {
+            "status": "000",
+            "total_count": 1,
+            "list": [
+                {
+                    "corp_code": "x",
+                    "corp_name": KORP,
+                    "stock_code": "123456",
+                    "corp_cls": "K",
+                    "report_nm": "\uC8FC\uC694\uC0AC\uD56D\uBCF4\uACE0\uC11C(\uAC10\uC790\uACB0\uC815)",
+                    "rcept_no": "20260308000007",
+                    "rcept_dt": "20260308",
+                }
+            ],
+        }
+
+    def get_capital_reduction_disclosures(self, **kwargs):
+        self.calls.append(("ds005", kwargs))
+        return {
+            "status": "000",
+            "list": [
+                {
+                    "rcept_no": "20260308000007",
+                    "bfcr_tisstk_ostk": "1000",
+                    "atcr_tisstk_ostk": "200",
+                    "crsc_nstklstprd": "2026-04-30",
+                }
+            ],
+        }
 
 
 class _FakeRightsBonusClient(_FakeClient):
@@ -315,3 +417,242 @@ def test_infer_ds005_factor_split_merger_equal_ratio_returns_one():
     }
 
     assert _infer_ds005_factor("SPLIT_MERGER", row) == 1.0
+
+
+
+def test_collect_and_rebuild_adjustments_materializes_factor_window(repo):
+    _seed_instrument(repo)
+    from financial_data_collector.collectors import DailyMarketCollector
+
+    instrument_id = repo.get_instrument_id_by_external_code("123456", market_code="KOSDAQ")
+    DailyMarketCollector(repo).collect(
+        [
+            {"instrument_id": instrument_id, "trade_date": date(2026, 3, 7), "open": 100, "high": 110, "low": 90, "close": 100, "volume": 10},
+            {"instrument_id": instrument_id, "trade_date": date(2026, 3, 8), "open": 50, "high": 55, "low": 45, "close": 50, "volume": 10},
+        ],
+        "krx",
+        "r1",
+    )
+
+    out = collect_corporate_events_and_rebuild_factors(
+        repo=repo,
+        client=_FakeClient(),
+        bgn_de=date(2026, 3, 8),
+        end_de=date(2026, 3, 8),
+        verify_document=True,
+        overlap_days=2,
+    )
+
+    assert out["collect"]["active_events"] == 1
+    assert out["rebuild_status"] == "SUCCEEDED"
+    assert out["rebuild_skip_reason"] is None
+    assert out["latest_trade_date"] == "2026-03-08"
+    assert out["impacted_window"] == {"date_from": "2026-03-06", "date_to": "2026-03-08"}
+    rows = repo.query("SELECT trade_date, cumulative_factor FROM price_adjustment_factors WHERE instrument_id = %s ORDER BY trade_date", (instrument_id,))
+    assert rows[0]["trade_date"] == "2026-03-07"
+    assert rows[0]["cumulative_factor"] > 0
+
+
+def test_collect_and_rebuild_adjustments_skips_without_trade_dates(repo):
+    _seed_instrument(repo)
+
+    out = collect_corporate_events_and_rebuild_factors(
+        repo=repo,
+        client=_FakeClient(),
+        bgn_de=date(2026, 3, 8),
+        end_de=date(2026, 3, 8),
+        verify_document=True,
+        overlap_days=2,
+    )
+
+    assert out["collect"]["active_events"] == 1
+    assert out["rebuild"] is None
+    assert out["impacted_window"] is None
+    assert out["rebuild_status"] == "SKIPPED"
+    assert out["rebuild_skip_reason"] == "NO_TRADE_DATES"
+    assert out["latest_trade_date"] is None
+
+
+
+def test_run_dart_corporate_event_collection_persists_run_metadata(repo):
+    _seed_instrument(repo)
+
+    out = run_dart_corporate_event_collection(
+        database_url=repo.database_url,
+        schema=repo.schema,
+        client=_FakeClient(),
+        bgn_de=date(2026, 3, 8),
+        end_de=date(2026, 3, 8),
+        verify_document=True,
+        rebuild_adjustments=False,
+    )
+
+    row = repo.query(
+        "SELECT pipeline_name, source_name, status, success_count, warning_count, metadata FROM collection_runs WHERE run_id = %s",
+        (out["run_id"],),
+    )[0]
+    assert row["pipeline_name"] == "collect-dart-corporate-events"
+    assert row["source_name"] == "opendart"
+    assert row["status"] == "SUCCESS"
+    assert row["success_count"] == 1
+    assert row["warning_count"] == 0
+    assert row["metadata"]["active_events"] == 1
+
+
+def test_collect_corporate_events_uses_rcept_dt_as_announce_date_only(repo):
+    _seed_instrument(repo)
+
+    out = collect_corporate_events(
+        repo=repo,
+        client=_FakeCapitalReductionDs005Client(),
+        bgn_de=date(2026, 3, 8),
+        end_de=date(2026, 3, 8),
+        verify_document=False,
+    )
+
+    assert out["events_upserted"] == 1
+    rows = repo.query("SELECT announce_date, effective_date, status, raw_factor FROM corporate_events WHERE source_event_id = %s", ("20260308000007",))
+    assert rows[0]["announce_date"] == "2026-03-08"
+    assert rows[0]["effective_date"] == "2026-04-30"
+    assert rows[0]["status"] == "ACTIVE"
+    assert float(rows[0]["raw_factor"]) == 5.0
+
+
+def test_collect_corporate_events_keeps_third_party_rights_issue_in_review_without_effective_date(repo):
+    _seed_instrument(repo)
+
+    out = collect_corporate_events(
+        repo=repo,
+        client=_FakeThirdPartyRightsClient(),
+        bgn_de=date(2026, 3, 8),
+        end_de=date(2026, 3, 8),
+        verify_document=False,
+    )
+
+    assert out["events_upserted"] == 1
+    rows = repo.query("SELECT event_type, status, effective_date, announce_date, raw_factor FROM corporate_events WHERE source_event_id = %s", ("20260308000006",))
+    assert rows[0]["event_type"] == "RIGHTS_ISSUE_THIRD_PARTY"
+    assert rows[0]["announce_date"] == "2026-03-08"
+    assert rows[0]["effective_date"] is None
+    assert rows[0]["status"] == "NEEDS_REVIEW"
+    assert float(rows[0]["raw_factor"]) == 0.9
+
+
+def test_collect_corporate_events_keeps_public_rights_issue_in_review_without_listing_date(repo):
+    _seed_instrument(repo)
+
+    out = collect_corporate_events(
+        repo=repo,
+        client=_FakePublicRightsClient(),
+        bgn_de=date(2026, 3, 8),
+        end_de=date(2026, 3, 8),
+        verify_document=False,
+    )
+
+    assert out["events_upserted"] == 1
+    rows = repo.query("SELECT status, effective_date, raw_factor, payload->>'activation_issue' AS activation_issue FROM corporate_events WHERE source_event_id = %s", ("20260308000008",))
+    assert rows[0]["status"] == "NEEDS_REVIEW"
+    assert rows[0]["effective_date"] is None
+    assert float(rows[0]["raw_factor"]) == 0.9
+    assert rows[0]["activation_issue"] == "missing_listing_like_date"
+
+
+def test_repair_corporate_event_timings_moves_capital_reduction_to_listing_date(repo):
+    _seed_instrument(repo)
+
+    collect_corporate_events(
+        repo=repo,
+        client=_FakeCapitalReductionDs005Client(),
+        bgn_de=date(2026, 3, 8),
+        end_de=date(2026, 3, 8),
+        verify_document=False,
+    )
+    with repo.connect() as conn:
+        conn.execute(
+            "UPDATE corporate_events SET effective_date = %s, status = %s WHERE source_event_id = %s",
+            ("2026-03-08", "ACTIVE", "20260308000007"),
+        )
+
+    out = repair_corporate_event_timings(repo, "2026-03-01", "2026-03-31")
+    assert out["upserted"] == 1
+
+    rows = repo.query("SELECT effective_date, status, payload->>'repair_effective_date' AS repair_effective_date FROM corporate_events WHERE source_event_id = %s", ("20260308000007",))
+    assert rows[0]["effective_date"] == "2026-04-30"
+    assert rows[0]["status"] == "ACTIVE"
+    assert rows[0]["repair_effective_date"] == "2026-04-30"
+
+
+def test_repair_corporate_event_timings_blocks_duplicate_bonus_when_rights_bonus_exists(repo):
+    _seed_instrument(repo)
+    instrument_id = repo.get_instrument_id_by_external_code("123456", market_code="KOSDAQ")
+    assert instrument_id
+    repo.upsert_corporate_events([
+        {
+            "event_id": "evt_bonus_dup",
+            "event_version": 1,
+            "instrument_id": instrument_id,
+            "event_type": "BONUS_ISSUE",
+            "announce_date": "2026-02-10",
+            "effective_date": "2026-02-10",
+            "source_event_id": "dup1",
+            "source_name": "opendart",
+            "collected_at": "2026-02-10T00:00:00Z",
+            "raw_factor": 0.5,
+            "confidence": "HIGH",
+            "status": "ACTIVE",
+            "payload": {"report_nm": "???????(???????)"},
+        },
+        {
+            "event_id": "evt_rights_bonus_dup",
+            "event_version": 1,
+            "instrument_id": instrument_id,
+            "event_type": "RIGHTS_BONUS_ISSUE",
+            "announce_date": "2026-02-10",
+            "effective_date": "2026-02-10",
+            "source_event_id": "dup1",
+            "source_name": "opendart",
+            "collected_at": "2026-02-10T00:00:00Z",
+            "raw_factor": 0.5,
+            "confidence": "HIGH",
+            "status": "ACTIVE",
+            "payload": {"report_nm": "???????(???????)"},
+        },
+    ])
+
+    out = repair_corporate_event_timings(repo, "2026-02-01", "2026-02-28")
+    assert out["upserted"] == 2
+    rows = repo.query("SELECT event_type, status, payload->>'activation_issue' AS activation_issue FROM corporate_events WHERE source_event_id = %s ORDER BY event_type", ("dup1",))
+    assert rows[0]["event_type"] == "BONUS_ISSUE"
+    assert rows[0]["status"] == "NEEDS_REVIEW"
+    assert rows[0]["activation_issue"] == "duplicate_rights_bonus_event"
+    assert rows[1]["event_type"] == "RIGHTS_BONUS_ISSUE"
+    assert rows[1]["status"] == "ACTIVE"
+
+
+def test_repair_corporate_event_timings_blocks_document_only_rights_issue_without_pricing_inputs(repo):
+    _seed_instrument(repo)
+    instrument_id = repo.get_instrument_id_by_external_code("123456", market_code="KOSDAQ")
+    assert instrument_id
+    repo.upsert_corporate_events([
+        {
+            "event_id": "evt_rights_doc_only",
+            "event_version": 1,
+            "instrument_id": instrument_id,
+            "event_type": "RIGHTS_ISSUE",
+            "announce_date": "2026-02-10",
+            "effective_date": "2026-02-10",
+            "source_event_id": "doconly1",
+            "source_name": "opendart",
+            "collected_at": "2026-02-10T00:00:00Z",
+            "raw_factor": 0.9,
+            "confidence": "MEDIUM",
+            "status": "ACTIVE",
+            "payload": {"factor_rule": "rights_issue_keyword_sections", "report_nm": "???????(??????)"},
+        },
+    ])
+
+    out = repair_corporate_event_timings(repo, "2026-02-01", "2026-02-28")
+    assert out["upserted"] >= 1
+    row = repo.query("SELECT status, payload->>'activation_issue' AS activation_issue FROM corporate_events WHERE source_event_id = %s", ("doconly1",))[0]
+    assert row["status"] == "NEEDS_REVIEW"
+    assert row["activation_issue"] == "missing_pricing_inputs"

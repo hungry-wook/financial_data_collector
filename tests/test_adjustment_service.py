@@ -52,6 +52,8 @@ def test_adjustment_service_builds_cumulative_factor(repo):
 
     out = AdjustmentService(repo).rebuild_factors("2026-01-01", "2026-01-10")
     assert out["factors"] == 3
+    assert out["instrument_count"] == 1
+    assert out["event_date_count"] == 1
 
     rows = repo.query(
         """
@@ -68,3 +70,9 @@ def test_adjustment_service_builds_cumulative_factor(repo):
     # event day and after stay at latest basis
     assert rows[1]["cumulative_factor"] == 1.0
     assert rows[2]["cumulative_factor"] == 1.0
+
+
+
+def test_adjustment_service_compute_impacted_window():
+    out = AdjustmentService.compute_impacted_window("2026-01-10", "2026-01-20", overlap_days=7)
+    assert out == {"date_from": "2026-01-03", "date_to": "2026-01-20"}

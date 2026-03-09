@@ -2,7 +2,8 @@
 import re
 import zipfile
 from html import unescape
-from typing import List, Optional, Tuple
+from datetime import date
+from typing import Dict, List, Optional, Tuple
 
 
 BONUS_ISSUE_PER_SHARE = r"1\s*\uC8FC\s*\uB2F9\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*\uC8FC"
@@ -92,7 +93,7 @@ def _pick_ratio_pair(numbers: List[float], prefer_before_ge_after: bool) -> Opti
 def infer_event_status(event_type: str, text: str) -> Optional[Tuple[str, str]]:
     body = str(text or "")
     et = str(event_type or "").strip().upper()
-    if et not in {"BONUS_ISSUE", "RIGHTS_ISSUE", "RIGHTS_BONUS_ISSUE", "CAPITAL_REDUCTION"}:
+    if et not in {"BONUS_ISSUE", "RIGHTS_ISSUE", "RIGHTS_BONUS_ISSUE", "CAPITAL_REDUCTION", "RIGHTS_ISSUE_SHAREHOLDER", "RIGHTS_ISSUE_PUBLIC", "RIGHTS_ISSUE_THIRD_PARTY"}:
         return None
 
     if re.search(r"(철회|취소)", body) and re.search(r"(유상증자|무상증자|유무상증자|감자)", body):
@@ -164,7 +165,7 @@ def infer_raw_factor(event_type: str, text: str) -> Tuple[Optional[float], str]:
         if re.search(r"\uBD84\uD560\uBE44\uC728[\s\S]{0,24}\uC0B0\uC815\uD558\uC9C0\s*\uC54A", body):
             return 1.0, "split_no_direct_ratio"
 
-    if et in {"RIGHTS_ISSUE", "RIGHTS_BONUS_ISSUE"}:
+    if et in {"RIGHTS_ISSUE", "RIGHTS_BONUS_ISSUE", "RIGHTS_ISSUE_SHAREHOLDER", "RIGHTS_ISSUE_PUBLIC", "RIGHTS_ISSUE_THIRD_PARTY"}:
         new_shares = _find_first_number(RIGHTS_NEW_SHARES, body)
         old_shares = _find_first_number(RIGHTS_OLD_SHARES, body)
         if old_shares and new_shares and old_shares > 0 and new_shares > 0:
@@ -194,3 +195,106 @@ def infer_raw_factor(event_type: str, text: str) -> Tuple[Optional[float], str]:
             return 1.0, "structural_no_new_share_text"
 
     return None, "no_rule_matched"
+
+
+def _coerce_iso_date(text: str) -> Optional[str]:
+    body = str(text or "")
+    m = re.search(r"(20\d{2})[^0-9]+(\d{1,2})[^0-9]+(\d{1,2})", body)
+    if not m:
+        return None
+    year, month, day = m.groups()
+    try:
+        return date(int(year), int(month), int(day)).isoformat()
+    except ValueError:
+        return None
+
+
+def infer_rights_issue_subtype(ds005_row: Optional[Dict] = None, text: str = "") -> Optional[str]:
+    row = ds005_row or {}
+    body = f"{row.get('ic_mthn') or ''} {text or ''}"
+    if re.search(r"제\s*3\s*자\s*배정", body):
+        return "RIGHTS_ISSUE_THIRD_PARTY"
+    if re.search(r"일반\s*공모", body):
+        return "RIGHTS_ISSUE_PUBLIC"
+    if re.search(r"주주\s*배정|구주주", body):
+        return "RIGHTS_ISSUE_SHAREHOLDER"
+    return None
+
+
+def infer_effective_date(event_type: str, text: str, ds005_row: Optional[Dict] = None) -> Optional[str]:
+    row = ds005_row or {}
+    keyed_values = [
+        row.get('crsc_nstklstprd'),
+        row.get('nstk_lstg_dt'),
+        row.get('lstg_dt'),
+        row.get('itmsnstk_onsl_dt'),
+        row.get('mrgdt'),
+        row.get('trfdt'),
+        row.get('mgdt'),
+        row.get('pay_dt'),
+        row.get('extshdt'),
+        row.get('dvd_shr_dt'),
+    ]
+    for value in keyed_values:
+        resolved = _coerce_iso_date(str(value or ""))
+        if resolved:
+            return resolved
+
+    body = str(text or "")
+    patterns = {
+        "BONUS_ISSUE": [
+            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"상장예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+        ],
+        "CAPITAL_REDUCTION": [
+            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"효력발생일\s*[:：]?\s*(20\d{2}.{0,12})",
+        ],
+        "SPLIT": [
+            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"분할기일\s*[:：]?\s*(20\d{2}.{0,12})",
+        ],
+        "SPLIT_MERGER": [
+            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"분할합병기일\s*[:：]?\s*(20\d{2}.{0,12})",
+        ],
+        "MERGER": [
+            r"합병기일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+        ],
+        "STOCK_SWAP": [
+            r"주식교환일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+        ],
+        "STOCK_TRANSFER": [
+            r"주식이전일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+        ],
+        "RIGHTS_ISSUE": [
+            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"납입일\s*[:：]?\s*(20\d{2}.{0,12})",
+        ],
+        "RIGHTS_ISSUE_SHAREHOLDER": [
+            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"구주주\s*청약일\s*[:：]?\s*(20\d{2}.{0,12})",
+        ],
+        "RIGHTS_ISSUE_PUBLIC": [
+            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"청약일\s*[:：]?\s*(20\d{2}.{0,12})",
+        ],
+        "RIGHTS_ISSUE_THIRD_PARTY": [
+            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+        ],
+        "RIGHTS_BONUS_ISSUE": [
+            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"납입일\s*[:：]?\s*(20\d{2}.{0,12})",
+        ],
+    }
+    for pattern in patterns.get(str(event_type or "").strip().upper(), []):
+        m = re.search(pattern, body)
+        if not m:
+            continue
+        resolved = _coerce_iso_date(m.group(1))
+        if resolved:
+            return resolved
+    return None

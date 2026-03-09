@@ -773,7 +773,7 @@ class Repository:
                    d.high * COALESCE(p.cumulative_factor, 1.0) AS high,
                    d.low * COALESCE(p.cumulative_factor, 1.0) AS low,
                    d.close * COALESCE(p.cumulative_factor, 1.0) AS close,
-                   d.volume,
+                   d.volume / COALESCE(NULLIF(p.cumulative_factor, 0), 1.0) AS volume,
                    d.turnover_value,
                    d.market_value,
                    d.is_trade_halted,
@@ -806,6 +806,7 @@ class Repository:
                    d.low * COALESCE(p.cumulative_factor, 1.0) AS adj_low,
                    d.close * COALESCE(p.cumulative_factor, 1.0) AS adj_close,
                    d.volume,
+                   d.volume / COALESCE(NULLIF(p.cumulative_factor, 0), 1.0) AS adj_volume,
                    d.turnover_value,
                    d.market_value,
                    d.is_trade_halted,
@@ -1181,6 +1182,18 @@ class Repository:
             """,
             (date_from, date_to),
         )
+
+
+    def get_latest_trade_date(self) -> Optional[str]:
+        rows = self.query(
+            """
+            SELECT MAX(trade_date) AS latest_trade_date
+            FROM daily_market_data
+            """
+        )
+        if not rows:
+            return None
+        return rows[0].get("latest_trade_date")
 
     def get_instrument_id_by_external_code(self, external_code: str, market_code: Optional[str] = None) -> Optional[str]:
         if not external_code:

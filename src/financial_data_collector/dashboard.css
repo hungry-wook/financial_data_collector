@@ -88,3 +88,15 @@ tr:hover td { background: #f7fafc; }
   .picker-market { justify-self: start; grid-column: 2 / 3; }
 }
 
+
+.run-detail-row td { background: #f8fbff; }
+.run-detail-cell { display: grid; gap: .35rem; }
+.run-meta-summary { color: #64748b; font-size: .74rem; line-height: 1.35; word-break: break-word; }
+.run-meta-grid { display: grid; gap: .5rem; }
+.run-meta-item { display: grid; grid-template-columns: minmax(180px, 260px) 1fr; gap: .75rem; padding: .55rem .7rem; border: 1px solid #dbe7f3; border-radius: 6px; background: #f8fbff; }
+.run-meta-key { color: #475569; font-size: .74rem; font-weight: 600; word-break: break-word; }
+.run-meta-value { color: #1e293b; font-size: .74rem; line-height: 1.45; word-break: break-word; }
+.link-btn { padding: 0; border: none; background: none; color: #1e3a5f; font-size: .78rem; font-weight: 600; cursor: pointer; text-align: left; }
+.link-btn:hover { text-decoration: underline; }
+
+.subcards { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); margin-bottom: 1rem; }

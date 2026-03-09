@@ -57,17 +57,39 @@ async def get_summary(request: Request):
 
 
 @router.get("/api/v1/dashboard/runs")
-async def get_runs(request: Request, limit: int = Query(20, ge=1, le=100)):
+async def get_runs(
+    request: Request,
+    limit: int = Query(20, ge=1, le=100),
+    pipeline: str = Query(""),
+    source_name: str = Query(""),
+    status: str = Query(""),
+):
     repo = request.app.state.repo
+    where_clauses = []
+    params = []
+    pipeline_value = pipeline if isinstance(pipeline, str) else ""
+    source_value = source_name if isinstance(source_name, str) else ""
+    status_value = status if isinstance(status, str) else ""
+    if pipeline_value:
+        where_clauses.append("pipeline_name = %s")
+        params.append(pipeline_value.strip())
+    if source_value:
+        where_clauses.append("source_name = %s")
+        params.append(source_value.strip())
+    if status_value:
+        where_clauses.append("status = %s")
+        params.append(status_value.strip())
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
     rows = repo.query(
-        """
+        f"""
         SELECT run_id, pipeline_name, source_name, window_start, window_end,
-               status, started_at, finished_at, success_count, failure_count, warning_count
+               status, started_at, finished_at, success_count, failure_count, warning_count, metadata
         FROM collection_runs
+        {where_sql}
         ORDER BY started_at DESC
         LIMIT %s
         """,
-        (limit,),
+        tuple(params + [limit]),
     )
     return rows
 

@@ -5,9 +5,17 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
+from .adjustment_service import AdjustmentService
 from .dart_client import DARTClient, DARTClientConfig
-from .dart_event_parser import extract_text_from_document_zip, infer_event_status, infer_raw_factor
+from .dart_event_parser import (
+    extract_text_from_document_zip,
+    infer_effective_date,
+    infer_event_status,
+    infer_raw_factor,
+    infer_rights_issue_subtype,
+)
 from .repository import Repository
+from .runs import RunManager
 from .settings import OpenDARTSettings, load_dotenv
 
 
@@ -45,11 +53,112 @@ def _normalize_report_name(report_nm: str) -> str:
     return text
 
 
-def _filing_effective_date(filing: Dict) -> Optional[str]:
+def _filing_announce_date(filing: Dict) -> Optional[str]:
     rcept_dt = str(filing.get("rcept_dt") or "").strip()
     if len(rcept_dt) == 8 and rcept_dt.isdigit():
         return f"{rcept_dt[0:4]}-{rcept_dt[4:6]}-{rcept_dt[6:8]}"
     return None
+
+
+def _filing_effective_date(filing: Dict) -> Optional[str]:
+    return _filing_announce_date(filing)
+
+
+def _coerce_iso_date(value: object) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    m = re.search(r"(20\d{2})[^0-9]+(\d{1,2})[^0-9]+(\d{1,2})", text)
+    if not m:
+        return None
+    year, month, day = m.groups()
+    try:
+        return date(int(year), int(month), int(day)).isoformat()
+    except ValueError:
+        return None
+
+
+def _derive_event_type(base_event_type: str, ds005_row: Dict, doc_text: str = "") -> str:
+    if base_event_type != "RIGHTS_ISSUE":
+        return base_event_type
+    subtype = infer_rights_issue_subtype(ds005_row=ds005_row, text=doc_text)
+    if subtype:
+        return subtype
+    return base_event_type
+
+
+def _derive_effective_date(event_type: str, filing: Dict, ds005_row: Dict, doc_text: str = "") -> Optional[str]:
+    keys_by_type = {
+        "BONUS_ISSUE": ["lstg_dt", "nstk_lstg_dt", "extshdt"],
+        "BONUS_ISSUE": ["nstk_lstprd", "nstk_dlprd", "nstk_dividrk", "lstg_dt", "nstk_lstg_dt", "extshdt"],
+        "CAPITAL_REDUCTION": ["crsc_nstklstprd", "nstk_lstg_dt", "lstg_dt", "itmsnstk_onsl_dt"],
+        "SPLIT": ["lstg_dt", "itmsnstk_onsl_dt", "dvd_shr_dt"],
+        "SPLIT_MERGER": ["lstg_dt", "itmsnstk_onsl_dt", "mgdt"],
+        "MERGER": ["lstg_dt", "mrgdt", "trfdt", "itmsnstk_onsl_dt"],
+        "STOCK_SWAP": ["lstg_dt", "trfdt", "itmsnstk_onsl_dt"],
+        "STOCK_TRANSFER": ["lstg_dt", "trfdt", "itmsnstk_onsl_dt"],
+        "RIGHTS_ISSUE": ["nstk_lstg_dt", "lstg_dt", "pay_dt"],
+        "RIGHTS_ISSUE_SHAREHOLDER": ["nstk_lstg_dt", "lstg_dt", "pay_dt"],
+        "RIGHTS_ISSUE_PUBLIC": ["nstk_lstg_dt", "lstg_dt", "pay_dt"],
+        "RIGHTS_ISSUE_THIRD_PARTY": ["nstk_lstg_dt", "lstg_dt", "pay_dt"],
+        "RIGHTS_BONUS_ISSUE": ["nstk_lstg_dt", "lstg_dt", "pay_dt"],
+    }
+    for key in keys_by_type.get(event_type, []):
+        resolved = _coerce_iso_date((ds005_row or {}).get(key))
+        if resolved:
+            return resolved
+    inferred = infer_effective_date(event_type=event_type, text=doc_text, ds005_row=ds005_row or {})
+    if inferred:
+        return inferred
+    if event_type == "RIGHTS_ISSUE_THIRD_PARTY":
+        return None
+    return None
+
+
+def _extract_listing_like_date(event_type: str, ds005_row: Dict) -> Optional[str]:
+    keys_by_type = {
+        "BONUS_ISSUE": ["nstk_lstprd", "nstk_dlprd", "nstk_dividrk", "lstg_dt", "nstk_lstg_dt", "extshdt"],
+        "CAPITAL_REDUCTION": ["crsc_nstklstprd", "nstk_lstg_dt", "lstg_dt", "itmsnstk_onsl_dt"],
+        "RIGHTS_ISSUE": ["nstk_lstg_dt", "lstg_dt", "pay_dt"],
+        "RIGHTS_ISSUE_SHAREHOLDER": ["nstk_lstg_dt", "lstg_dt", "pay_dt"],
+        "RIGHTS_ISSUE_PUBLIC": ["nstk_lstg_dt", "lstg_dt", "pay_dt"],
+        "RIGHTS_ISSUE_THIRD_PARTY": ["nstk_lstg_dt", "lstg_dt", "pay_dt"],
+        "RIGHTS_BONUS_ISSUE": ["nstk_lstg_dt", "lstg_dt", "pay_dt"],
+    }
+    for key in keys_by_type.get(event_type, []):
+        resolved = _coerce_iso_date((ds005_row or {}).get(key))
+        if resolved:
+            return resolved
+    return None
+
+
+def _apply_activation_rules(
+    event_type: str,
+    status: str,
+    effective_date: Optional[str],
+    ds005_row: Dict,
+    payload: Optional[Dict] = None,
+) -> Tuple[str, Optional[str], Optional[str]]:
+    listing_like_date = _extract_listing_like_date(event_type, ds005_row)
+
+    if event_type in {"BONUS_ISSUE", "RIGHTS_BONUS_ISSUE", "CAPITAL_REDUCTION"} and listing_like_date:
+        effective_date = listing_like_date
+
+    if status == "ACTIVE" and event_type in {"RIGHTS_ISSUE_PUBLIC", "RIGHTS_ISSUE_THIRD_PARTY"} and not listing_like_date:
+        return "NEEDS_REVIEW", effective_date, "missing_listing_like_date"
+
+    report_nm = str((ds005_row or {}).get("report_nm") or "")
+    payload = payload or {}
+    factor_rule = str(payload.get("factor_rule") or "")
+    has_ds005 = bool(ds005_row) and any(k != "report_nm" for k in ds005_row.keys())
+
+    if status == "ACTIVE" and event_type in {"RIGHTS_ISSUE", "RIGHTS_BONUS_ISSUE"} and not has_ds005 and factor_rule in {"rights_issue_share_count", "rights_issue_keyword_sections", "rights_issue_section1_3"}:
+        return "NEEDS_REVIEW", effective_date, "missing_pricing_inputs"
+
+    if status == "ACTIVE" and event_type == "SPLIT" and "회사분할" in report_nm and not listing_like_date:
+        return "NEEDS_REVIEW", effective_date, "structural_company_split_unverified"
+
+    return status, effective_date, None
 
 
 def _safe_float(value) -> Optional[float]:
@@ -159,7 +268,7 @@ def _infer_ds005_factor(event_type: str, ds005_row: Dict) -> Optional[float]:
         if new_shares and old_shares and new_shares > 0 and old_shares > 0:
             return old_shares / (old_shares + new_shares)
 
-    if event_type in {"RIGHTS_ISSUE", "RIGHTS_BONUS_ISSUE"}:
+    if event_type in {"RIGHTS_ISSUE", "RIGHTS_BONUS_ISSUE", "RIGHTS_ISSUE_SHAREHOLDER", "RIGHTS_ISSUE_PUBLIC", "RIGHTS_ISSUE_THIRD_PARTY"}:
         old_shares = _safe_float(ds005_row.get("bfic_tisstk_ostk")) or _safe_float(ds005_row.get("bfic_tisstk_estk"))
         new_shares = _safe_float(ds005_row.get("nstk_ostk_cnt")) or _safe_float(ds005_row.get("nstk_estk_cnt"))
         if new_shares and old_shares and new_shares > 0 and old_shares > 0:
@@ -220,9 +329,9 @@ def _recover_factor_from_remote_chain(
     revision_anchor: str,
     current_rcept_no: str,
     rcept_dt: str,
-) -> Tuple[Optional[float], Optional[str], Optional[str]]:
+) -> Tuple[Optional[float], Optional[str], Optional[str], Optional[str]]:
     if not corp_code or not revision_anchor or not hasattr(client, 'list_filings'):
-        return None, None, None
+        return None, None, None, None
 
     bgn_de, end_de = _chain_lookup_window_from_rcept_dt(rcept_dt)
     filings: List[Dict] = []
@@ -245,6 +354,8 @@ def _recover_factor_from_remote_chain(
     candidates = []
     for filing in filings:
         candidate_event_type = _map_event_type(filing.get('report_nm'))
+        if candidate_event_type == "RIGHTS_ISSUE" and str(event_type).startswith("RIGHTS_ISSUE"):
+            candidate_event_type = event_type
         if candidate_event_type != event_type:
             continue
         if _normalize_report_name(filing.get('report_nm')) != revision_anchor:
@@ -264,9 +375,11 @@ def _recover_factor_from_remote_chain(
             rcept_no=candidate_rcept_no,
             rcept_dt=candidate_rcept_dt,
         )
+        event_type = _derive_event_type(event_type, ds005_row, "")
         ds005_factor = _infer_ds005_factor(event_type, ds005_row)
         if ds005_factor and ds005_factor > 0:
-            return ds005_factor, f'remote_chain_ds005_{ds005_match_type.lower()}', candidate_rcept_no
+            effective_date = _derive_effective_date(event_type, filing, ds005_row, "")
+            return ds005_factor, f'remote_chain_ds005_{ds005_match_type.lower()}', candidate_rcept_no, effective_date
 
         try:
             doc_zip = client.get_document_zip(candidate_rcept_no)
@@ -280,9 +393,10 @@ def _recover_factor_from_remote_chain(
 
         raw_factor, factor_rule = infer_raw_factor(event_type, doc_text)
         if raw_factor and raw_factor > 0:
-            return raw_factor, f'remote_chain_{factor_rule}', candidate_rcept_no
+            effective_date = _derive_effective_date(event_type, filing, {}, doc_text)
+            return raw_factor, f'remote_chain_{factor_rule}', candidate_rcept_no, effective_date
 
-    return None, None, None
+    return None, None, None, None
 
 
 def _resolve_instrument_id(
@@ -322,6 +436,142 @@ def _resolve_instrument_id(
             return instrument_id, "corp_code_event_history"
 
     return None, "not_found"
+
+
+def collect_corporate_events_and_rebuild_factors(
+    repo: Repository,
+    client: DARTClient,
+    bgn_de: date,
+    end_de: date,
+    pblntf_ty: str = "B",
+    last_reprt_at: str = "Y",
+    max_pages: int = 20,
+    verify_document: bool = True,
+    overlap_days: int = 7,
+    as_of_timestamp: Optional[str] = None,
+    run_id: Optional[str] = None,
+) -> Dict[str, object]:
+    collect_result = collect_corporate_events(
+        repo=repo,
+        client=client,
+        bgn_de=bgn_de,
+        end_de=end_de,
+        pblntf_ty=pblntf_ty,
+        last_reprt_at=last_reprt_at,
+        max_pages=max_pages,
+        verify_document=verify_document,
+    )
+
+    latest_trade_date = repo.get_latest_trade_date()
+    impacted_window = AdjustmentService.compute_impacted_window(
+        date_from=bgn_de.isoformat(),
+        latest_trade_date=latest_trade_date,
+        overlap_days=overlap_days,
+    )
+    if impacted_window is None:
+        return {
+            "collect": collect_result,
+            "rebuild": None,
+            "impacted_window": None,
+            "rebuild_status": "SKIPPED",
+            "rebuild_skip_reason": "NO_TRADE_DATES",
+            "latest_trade_date": latest_trade_date,
+        }
+
+    rebuild_result = AdjustmentService(repo).rebuild_factors(
+        date_from=impacted_window["date_from"],
+        date_to=impacted_window["date_to"],
+        as_of_timestamp=as_of_timestamp,
+        run_id=run_id,
+    )
+    return {
+        "collect": collect_result,
+        "rebuild": rebuild_result,
+        "impacted_window": impacted_window,
+        "rebuild_status": "SUCCEEDED",
+        "rebuild_skip_reason": None,
+        "latest_trade_date": latest_trade_date,
+    }
+
+
+def run_dart_corporate_event_collection(
+    database_url: str,
+    bgn_de: date,
+    end_de: date,
+    pblntf_ty: str = "B",
+    last_reprt_at: str = "Y",
+    max_pages: int = 20,
+    verify_document: bool = True,
+    rebuild_adjustments: bool = False,
+    overlap_days: int = 7,
+    as_of_timestamp: Optional[str] = None,
+    run_id: Optional[str] = None,
+    client: Optional[DARTClient] = None,
+    schema: Optional[str] = None,
+) -> Dict[str, object]:
+    repo = Repository(database_url, schema=schema)
+    repo.init_schema()
+    dart_client = client
+    if dart_client is None:
+        load_dotenv(".env")
+        settings = OpenDARTSettings.from_env()
+        settings.validate()
+        dart_client = DARTClient(DARTClientConfig.from_settings(settings))
+
+    run_manager = RunManager(repo)
+    effective_run_id = run_id or run_manager.start(
+        "collect-dart-corporate-events",
+        "opendart",
+        bgn_de.isoformat(),
+        end_de.isoformat(),
+    )
+
+    try:
+        if rebuild_adjustments:
+            result = collect_corporate_events_and_rebuild_factors(
+                repo=repo,
+                client=dart_client,
+                bgn_de=bgn_de,
+                end_de=end_de,
+                pblntf_ty=pblntf_ty,
+                last_reprt_at=last_reprt_at,
+                max_pages=max_pages,
+                verify_document=verify_document,
+                overlap_days=overlap_days,
+                as_of_timestamp=as_of_timestamp,
+                run_id=effective_run_id,
+            )
+            collect_result = dict(result.get("collect") or {})
+        else:
+            collect_result = collect_corporate_events(
+                repo=repo,
+                client=dart_client,
+                bgn_de=bgn_de,
+                end_de=end_de,
+                pblntf_ty=pblntf_ty,
+                last_reprt_at=last_reprt_at,
+                max_pages=max_pages,
+                verify_document=verify_document,
+            )
+            result = dict(collect_result)
+
+        result["run_id"] = effective_run_id
+        run_manager.finish(
+            effective_run_id,
+            success_count=int(collect_result.get("active_events", 0)),
+            failure_count=0,
+            warning_count=int(collect_result.get("needs_review_events", 0)),
+        )
+        repo.update_run(
+            effective_run_id,
+            {
+                "metadata": json.dumps(result, ensure_ascii=False),
+            },
+        )
+        return result
+    except Exception:
+        run_manager.fail(effective_run_id)
+        raise
 
 
 def collect_corporate_events(
@@ -410,8 +660,10 @@ def collect_corporate_events(
             )
             continue
 
-        effective_date = _filing_effective_date(filing)
+        announce_date = _filing_announce_date(filing)
+        effective_date = None
         raw_factor = None
+        doc_text = ""
         factor_rule = "not_verified"
         status = "NEEDS_REVIEW"
         confidence = "LOW"
@@ -423,6 +675,7 @@ def collect_corporate_events(
             rcept_no=rcept_no,
             rcept_dt=rcept_dt,
         )
+        event_type = _derive_event_type(event_type, ds005_row, "")
         ds005_factor = _infer_ds005_factor(event_type, ds005_row)
         if ds005_factor and ds005_factor > 0:
             raw_factor = ds005_factor
@@ -439,7 +692,7 @@ def collect_corporate_events(
                 }
             )
         elif ds005_row:
-            ds005_expected = event_type in {"BONUS_ISSUE", "RIGHTS_ISSUE", "RIGHTS_BONUS_ISSUE", "CAPITAL_REDUCTION", "SPLIT"}
+            ds005_expected = event_type in {"BONUS_ISSUE", "RIGHTS_ISSUE", "RIGHTS_BONUS_ISSUE", "RIGHTS_ISSUE_SHAREHOLDER", "RIGHTS_ISSUE_PUBLIC", "RIGHTS_ISSUE_THIRD_PARTY", "CAPITAL_REDUCTION", "SPLIT"}
             validations.append(
                 {
                     "source_event_id": rcept_no,
@@ -458,6 +711,7 @@ def collect_corporate_events(
             try:
                 doc_zip = client.get_document_zip(rcept_no)
                 doc_text = extract_text_from_document_zip(doc_zip)
+                event_type = _derive_event_type(event_type, ds005_row, doc_text)
                 raw_factor, factor_rule = infer_raw_factor(event_type, doc_text)
                 if raw_factor and raw_factor > 0:
                     status = "ACTIVE"
@@ -507,7 +761,7 @@ def collect_corporate_events(
                 )
 
         if raw_factor is None and status == "NEEDS_REVIEW":
-            remote_factor, remote_rule, remote_source = _recover_factor_from_remote_chain(
+            remote_factor, remote_rule, remote_source, remote_effective_date = _recover_factor_from_remote_chain(
                 client=client,
                 event_type=event_type,
                 corp_code=corp_code,
@@ -520,6 +774,8 @@ def collect_corporate_events(
                 factor_rule = remote_rule or "remote_chain_factor"
                 status = "ACTIVE"
                 confidence = "MEDIUM"
+                if remote_effective_date and not effective_date:
+                    effective_date = remote_effective_date
                 validations.append(
                     {
                         "source_event_id": rcept_no,
@@ -549,6 +805,41 @@ def collect_corporate_events(
                     }
                 )
 
+        if not effective_date:
+            effective_date = _derive_effective_date(event_type, filing, ds005_row, doc_text)
+
+        status, effective_date, activation_issue = _apply_activation_rules(
+            event_type=event_type,
+            status=status,
+            effective_date=effective_date,
+            ds005_row=ds005_row,
+            payload=payload,
+        )
+        if activation_issue:
+            confidence = "LOW"
+            validations.append(
+                {
+                    "source_event_id": rcept_no,
+                    "check_name": "ACTIVATION_POLICY",
+                    "result": "PARSE_FAIL",
+                    "detail": f"Activation blocked for {event_type}: {activation_issue}",
+                    "validated_at": now,
+                }
+            )
+
+        if raw_factor is not None and raw_factor > 0 and status == "ACTIVE" and not effective_date:
+            status = "NEEDS_REVIEW"
+            confidence = "LOW"
+            validations.append(
+                {
+                    "source_event_id": rcept_no,
+                    "check_name": "EFFECTIVE_DATE",
+                    "result": "PARSE_FAIL",
+                    "detail": f"No effective date derived for {event_type}",
+                    "validated_at": now,
+                }
+            )
+
         if raw_factor is not None and raw_factor > 0:
             chain_factor_cache[chain_key] = raw_factor
 
@@ -558,6 +849,10 @@ def collect_corporate_events(
         payload["mapping_source"] = mapping_source
         payload["revision_anchor"] = revision_anchor
         payload["ds005_match_type"] = ds005_match_type
+        payload["announce_date_rule"] = "rcept_dt" if announce_date else None
+        payload["effective_date_rule"] = "derived" if effective_date else None
+        if activation_issue:
+            payload["activation_issue"] = activation_issue
         if ds005_row:
             payload["ds005_row"] = ds005_row
 
@@ -567,7 +862,7 @@ def collect_corporate_events(
                 "event_version": 1,
                 "instrument_id": instrument_id,
                 "event_type": event_type,
-                "announce_date": effective_date,
+                "announce_date": announce_date,
                 "effective_date": effective_date,
                 "source_event_id": rcept_no,
                 "source_name": "opendart",
@@ -611,31 +906,30 @@ def main() -> None:
     parser.add_argument("--last-reprt-at", default="Y", choices=["Y", "N"])
     parser.add_argument("--max-pages", type=int, default=20)
     parser.add_argument("--skip-document-verify", action="store_true")
+    parser.add_argument("--rebuild-adjustments", action="store_true")
+    parser.add_argument("--overlap-days", type=int, default=7)
+    parser.add_argument("--as-of-timestamp")
+    parser.add_argument("--run-id")
     args = parser.parse_args()
 
     if not args.database_url:
         raise ValueError("--database-url or DATABASE_URL is required")
 
-    load_dotenv(".env")
-    settings = OpenDARTSettings.from_env()
-    settings.validate()
-
     end_de = _parse_date(args.end_de) if args.end_de else date.today()
     bgn_de = _parse_date(args.bgn_de) if args.bgn_de else (end_de - timedelta(days=7))
 
-    client = DARTClient(DARTClientConfig.from_settings(settings))
-    repo = Repository(args.database_url)
-    repo.init_schema()
-
-    result = collect_corporate_events(
-        repo=repo,
-        client=client,
+    result = run_dart_corporate_event_collection(
+        database_url=args.database_url,
         bgn_de=bgn_de,
         end_de=end_de,
         pblntf_ty=args.pblntf_ty,
         last_reprt_at=args.last_reprt_at,
         max_pages=args.max_pages,
         verify_document=not args.skip_document_verify,
+        rebuild_adjustments=args.rebuild_adjustments,
+        overlap_days=args.overlap_days,
+        as_of_timestamp=args.as_of_timestamp,
+        run_id=args.run_id,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
@@ -644,3 +938,96 @@ if __name__ == "__main__":
     main()
 
 
+
+
+
+
+def repair_corporate_event_timings(
+    repo: Repository,
+    date_from: str,
+    date_to: str,
+) -> Dict[str, int]:
+    rows = repo.query(
+        """
+        SELECT event_id, event_version, instrument_id, event_type, announce_date, effective_date,
+               source_event_id, source_name, collected_at, run_id, raw_factor, confidence, status, payload
+        FROM corporate_events
+        WHERE (effective_date BETWEEN %s AND %s OR announce_date BETWEEN %s AND %s)
+        """,
+        (date_from, date_to, date_from, date_to),
+    )
+
+    source_event_types: Dict[str, set] = {}
+    for row in rows:
+        sid = str(row.get("source_event_id") or "")
+        if not sid:
+            continue
+        source_event_types.setdefault(sid, set()).add(str(row.get("event_type") or ""))
+
+    repaired = []
+    changed = 0
+    blocked = 0
+    date_shifted = 0
+    for row in rows:
+        payload = dict(row.get("payload") or {})
+        ds005_row = dict(payload.get("ds005_row") or {})
+        if payload.get("report_nm") and not ds005_row.get("report_nm"):
+            ds005_row["report_nm"] = payload.get("report_nm")
+        derived_event_type = _derive_event_type(str(row.get("event_type") or ""), ds005_row, "")
+        derived_effective_date = _derive_effective_date(derived_event_type, payload, ds005_row, "") or row.get("effective_date")
+        new_status, derived_effective_date, activation_issue = _apply_activation_rules(
+            event_type=derived_event_type,
+            status=str(row.get("status") or "NEEDS_REVIEW"),
+            effective_date=derived_effective_date,
+            ds005_row=ds005_row,
+            payload=payload,
+        )
+        sibling_types = source_event_types.get(str(row.get("source_event_id") or ""), set())
+        if row.get("event_type") == "BONUS_ISSUE" and "RIGHTS_BONUS_ISSUE" in sibling_types:
+            new_status = "NEEDS_REVIEW"
+            activation_issue = "duplicate_rights_bonus_event"
+        if row.get("event_type") == "SPLIT" and "SPLIT_MERGER" in sibling_types:
+            new_status = "NEEDS_REVIEW"
+            activation_issue = "duplicate_split_merger_event"
+        if payload.get("derived_event_type") != derived_event_type:
+            payload["derived_event_type"] = derived_event_type
+        payload["repair_effective_date"] = derived_effective_date
+        payload["repair_status"] = new_status
+        if activation_issue:
+            payload["activation_issue"] = activation_issue
+
+        if new_status != row.get("status"):
+            changed += 1
+            if new_status != "ACTIVE":
+                blocked += 1
+        if derived_effective_date != row.get("effective_date"):
+            changed += 1
+            date_shifted += 1
+
+        repaired.append(
+            {
+                "event_id": row["event_id"],
+                "event_version": row["event_version"],
+                "instrument_id": row["instrument_id"],
+                "event_type": row["event_type"],
+                "announce_date": row.get("announce_date"),
+                "effective_date": derived_effective_date,
+                "source_event_id": row.get("source_event_id"),
+                "source_name": row["source_name"],
+                "collected_at": row["collected_at"],
+                "run_id": row.get("run_id"),
+                "raw_factor": row.get("raw_factor"),
+                "confidence": row.get("confidence") or "LOW",
+                "status": new_status,
+                "payload": payload,
+            }
+        )
+
+    upserted = repo.upsert_corporate_events(repaired)
+    return {
+        "scanned": len(rows),
+        "upserted": upserted,
+        "changed": changed,
+        "blocked": blocked,
+        "date_shifted": date_shifted,
+    }

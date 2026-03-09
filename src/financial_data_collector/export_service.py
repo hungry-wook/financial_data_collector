@@ -72,13 +72,6 @@ class ExportService:
         temp_path.mkdir(parents=True, exist_ok=True)
 
         try:
-            if req.series_type in {"adjusted", "both"}:
-                self.adjustment_service.rebuild_factors(
-                    date_from=req.date_from,
-                    date_to=req.date_to,
-                    as_of_timestamp=req.as_of_timestamp,
-                )
-
             instrument_rows = self.repo.get_core_market(
                 req.market_codes,
                 req.date_from,

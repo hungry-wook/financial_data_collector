@@ -140,6 +140,10 @@ function dashboard() {
     summary: {},
     runs: [],
     runsLoading: false,
+    expandedRunIds: {},
+    runPipelineFilter: "",
+    runSourceFilter: "",
+    runStatusFilter: "",
 
     instrumentQuery: "",
     instrumentOptions: [],
@@ -206,6 +210,7 @@ function dashboard() {
 
     async init() {
       this.loadMASettings();
+      this.loadRunFiltersFromUrl();
       await Promise.all([this.loadSummary(), this.loadRuns(), this.loadBenchmarks()]);
       this.lastRefresh = new Date().toLocaleTimeString("ko-KR");
       window.addEventListener("resize", () => this.resizeCharts());
@@ -1397,10 +1402,86 @@ function dashboard() {
       this.summary = await dashboardApi.get("/api/v1/dashboard/summary").catch(() => ({}));
     },
 
+    loadRunFiltersFromUrl() {
+      const q = new URLSearchParams(window.location.search);
+      this.runPipelineFilter = q.get("run_pipeline") || "";
+      this.runSourceFilter = q.get("run_source") || "";
+      this.runStatusFilter = q.get("run_status") || "";
+    },
+
+    syncRunFiltersToUrl() {
+      const url = new URL(window.location.href);
+      const pairs = [
+        ["run_pipeline", this.runPipelineFilter],
+        ["run_source", this.runSourceFilter],
+        ["run_status", this.runStatusFilter],
+      ];
+      pairs.forEach(([key, value]) => {
+        const text = String(value || "").trim();
+        if (text) url.searchParams.set(key, text);
+        else url.searchParams.delete(key);
+      });
+      window.history.replaceState({}, "", url);
+    },
+
     async loadRuns() {
       this.runsLoading = true;
-      this.runs = await dashboardApi.get("/api/v1/dashboard/runs", { limit: 20 }).catch(() => []);
+      this.syncRunFiltersToUrl();
+      this.runs = await dashboardApi.get("/api/v1/dashboard/runs", { limit: 20, pipeline: this.runPipelineFilter, source_name: this.runSourceFilter, status: this.runStatusFilter }).catch(() => []);
       this.runsLoading = false;
+    },
+
+    toggleRunDetails(runId) {
+      this.expandedRunIds = {
+        ...this.expandedRunIds,
+        [runId]: !this.expandedRunIds[runId],
+      };
+    },
+
+    isRunExpanded(runId) {
+      return !!this.expandedRunIds[runId];
+    },
+
+    metadataEntries(metadata, prefix = "") {
+      if (!metadata || typeof metadata !== "object") return [];
+      const entries = [];
+      Object.entries(metadata).forEach(([key, value]) => {
+        const label = prefix ? `${prefix}.${key}` : key;
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+          entries.push(...this.metadataEntries(value, label));
+          return;
+        }
+        const display = Array.isArray(value) ? JSON.stringify(value) : String(value);
+        entries.push({ key: label, value: display });
+      });
+      return entries;
+    },
+
+    dartRunSummary() {
+      const rows = Array.isArray(this.runs) ? this.runs.filter((r) => r.pipeline_name === "collect-dart-corporate-events") : [];
+      const summary = { total: rows.length, succeeded: 0, skipped: 0, failed: 0 };
+      rows.forEach((r) => {
+        if (r.status === "FAILED") summary.failed += 1;
+        if (r.metadata?.rebuild_status === "SUCCEEDED") summary.succeeded += 1;
+        if (r.metadata?.rebuild_status === "SKIPPED") summary.skipped += 1;
+      });
+      return summary;
+    },
+
+    runMetadataSummary(run) {
+      const meta = run?.metadata;
+      if (!meta || typeof meta !== "object") return "-";
+      const parts = [];
+      if (meta.rebuild_status) parts.push(`rebuild=${meta.rebuild_status}`);
+      if (meta.rebuild_skip_reason) parts.push(`reason=${meta.rebuild_skip_reason}`);
+      if (meta.latest_trade_date) parts.push(`latest_trade_date=${meta.latest_trade_date}`);
+      if (meta.rebuild?.instrument_count != null) parts.push(`instruments=${meta.rebuild.instrument_count}`);
+      if (meta.rebuild?.event_date_count != null) parts.push(`event_dates=${meta.rebuild.event_date_count}`);
+      if (meta.rebuild?.factors != null) parts.push(`factors=${meta.rebuild.factors}`);
+      if (meta.impacted_window?.date_from && meta.impacted_window?.date_to) {
+        parts.push(`window=${meta.impacted_window.date_from}~${meta.impacted_window.date_to}`);
+      }
+      return parts.length ? parts.join(" | ") : "-";
     },
 
     async loadBenchmarks() {

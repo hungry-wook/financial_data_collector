@@ -49,44 +49,70 @@ This backlog is the execution breakdown for adjusted OHLC implementation (ex-div
 - Add manual override path (`ACTIVE`/`REJECTED`).
 - DoD: override flow tested end-to-end.
 
+9. Effective-date derivation engine
+- Replace `effective_date = rcept_dt` fallback with event-specific rules.
+- Parse DS005/document fields for:
+  - listing date
+  - merger effective date
+  - split effective date
+  - capital reduction new-share listing date
+- DoD: known mismatch samples reclassified as `effective_date_error` or corrected to external vendor timing.
+
+10. Rights-issue subtype model
+- Split `RIGHTS_ISSUE` into shareholder/public/third-party issuance.
+- Preserve subtype in canonical event payload and DB event_type.
+- Default `RIGHTS_ISSUE_THIRD_PARTY` to review unless listing/effective date is explicit.
+- DoD: recent third-party allotment samples no longer auto-adjust on filing date.
+
 ## P2 - Factor Build and Serving
 
-9. Factor engine
+11. Factor engine
 - Calculate per-event factor and same-day composition.
 - Materialize daily factors and cumulative factors.
 - DoD: gold-case tests for split/merge/rights/merger scenarios.
 
-10. Dataset v2 view
+12. Dataset v2 view
 - Create `core_market_dataset_v2` with raw + adjusted OHLC.
 - Keep v1 immutable.
 - DoD: view contract documented and tested.
 
-11. Export and API integration
+13. Export and API integration
 - Add series selector (`raw`, `adjusted`, `both`) and `as_of_timestamp`.
 - Keep backward compatibility defaults.
 - DoD: API and export tests updated and green.
 
-12. Strategy input split
+14. Strategy input split
 - Signal path uses adjusted series.
 - Execution/risk path uses raw series.
 - DoD: sample strategy run verifies split path behavior.
 
 ## P3 - Reliability and Rollout
 
-13. Backfill jobs
+15. External validation harness
+- Compare local adjusted series to vendor adjusted close on sampled instruments.
+- Label failures as:
+  - `factor_error`
+  - `effective_date_error`
+  - `vendor_mismatch`
+  - `insufficient_price_history`
+- DoD: validation report produced for 50-sample and broad-sample runs.
+
+16. Backfill jobs
 - Historical backfill from 2015-01-01 to present.
 - Sliding reprocess window (recent 30 days) for amendments.
 - DoD: daily run report includes new/amended/rejected counts.
 
-14. Quality gates
+17. Quality gates
 - Metrics: parse success rate, verification mismatch rate, factor coverage.
 - Release gate thresholds:
   - parse success >= 99.0%
   - mismatch <= 1.0%
   - factor coverage >= 98.0%
+  - external validation >= 99.0% within 2%
+  - external validation >= 95.0% within 0.1% after excluding `vendor_mismatch`
 - DoD: CI blocks release when thresholds fail.
 
-15. Regression benchmark pack
+18. Regression benchmark pack
 - Compare `raw` vs `adjusted` backtest outputs over fixed periods.
 - Track KPI deltas: CAGR, MDD, win-rate, turnover.
 - DoD: automated report generated in CI artifact.
@@ -106,3 +132,9 @@ This backlog is the execution breakdown for adjusted OHLC implementation (ex-div
 
 - Risk: performance regression in export/query.
 - Mitigation: pre-materialized factors and dedicated indexes.
+
+- Risk: third-party allotment is modeled as ordinary rights issue.
+- Mitigation: subtype split and listing-date-based activation.
+
+- Risk: vendor mismatch is misdiagnosed as factor error.
+- Mitigation: validation outcome taxonomy and sample-based review.

@@ -1,7 +1,7 @@
 ﻿import io
 import zipfile
 
-from financial_data_collector.dart_event_parser import extract_text_from_document_zip, infer_event_status, infer_raw_factor
+from financial_data_collector.dart_event_parser import extract_text_from_document_zip, infer_effective_date, infer_event_status, infer_raw_factor, infer_rights_issue_subtype
 
 
 def test_extract_text_from_document_zip_reads_html_payload():
@@ -89,3 +89,13 @@ def _zip_single(name: str, text: str) -> bytes:
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(name, text)
     return buf.getvalue()
+
+
+def test_infer_rights_issue_subtype_third_party_from_ds005():
+    subtype = infer_rights_issue_subtype(ds005_row={"ic_mthn": "\uC81C3\uC790\uBC30\uC815\uC99D\uC790"})
+    assert subtype == "RIGHTS_ISSUE_THIRD_PARTY"
+
+
+def test_infer_effective_date_from_capital_reduction_listing_date():
+    value = infer_effective_date("CAPITAL_REDUCTION", "", {"crsc_nstklstprd": "2026-04-30"})
+    assert value == "2026-04-30"

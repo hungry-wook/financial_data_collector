@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import date
 
 from financial_data_collector.collectors import BenchmarkCollector
@@ -8,6 +9,7 @@ from financial_data_collector.dashboard_routes import (
     get_instrument_profile,
     get_instruments,
     get_prices,
+    get_runs,
 )
 
 
@@ -491,3 +493,107 @@ def test_dashboard_benchmark_detail_prefers_representative_series(repo):
 
     assert payload["total"] == 1
     assert payload["items"][0]["close"] == 1100.5
+
+
+def test_dashboard_runs_includes_metadata(repo):
+    repo.insert_run(
+        {
+            "run_id": "c8f8fb76-60f1-41a3-9db8-26c3ed07c001",
+            "pipeline_name": "collect-dart-corporate-events",
+            "source_name": "opendart",
+            "window_start": "2026-03-01",
+            "window_end": "2026-03-09",
+            "status": "SUCCESS",
+            "started_at": "2026-03-09T00:00:00Z",
+            "finished_at": "2026-03-09T00:01:00Z",
+            "success_count": 10,
+            "failure_count": 0,
+            "warning_count": 1,
+            "metadata": json.dumps({"rebuild_status": "SUCCEEDED", "latest_trade_date": "2026-03-08"}),
+        }
+    )
+
+    rows = asyncio.run(get_runs(_DummyRequest(repo), limit=20))
+
+    assert rows[0]["pipeline_name"] == "collect-dart-corporate-events"
+    assert rows[0]["metadata"]["rebuild_status"] == "SUCCEEDED"
+    assert rows[0]["metadata"]["latest_trade_date"] == "2026-03-08"
+
+
+def test_dashboard_runs_filters_by_pipeline(repo):
+    repo.insert_run(
+        {
+            "run_id": "c8f8fb76-60f1-41a3-9db8-26c3ed07c002",
+            "pipeline_name": "collect-dart-corporate-events",
+            "source_name": "opendart",
+            "window_start": "2026-03-01",
+            "window_end": "2026-03-09",
+            "status": "SUCCESS",
+            "started_at": "2026-03-09T00:00:00Z",
+            "finished_at": "2026-03-09T00:01:00Z",
+            "success_count": 10,
+            "failure_count": 0,
+            "warning_count": 1,
+            "metadata": json.dumps({"rebuild_status": "SUCCEEDED"}),
+        }
+    )
+    repo.insert_run(
+        {
+            "run_id": "c8f8fb76-60f1-41a3-9db8-26c3ed07c003",
+            "pipeline_name": "phase1",
+            "source_name": "krx",
+            "window_start": "2026-03-01",
+            "window_end": "2026-03-01",
+            "status": "SUCCESS",
+            "started_at": "2026-03-09T00:02:00Z",
+            "finished_at": "2026-03-09T00:03:00Z",
+            "success_count": 1,
+            "failure_count": 0,
+            "warning_count": 0,
+            "metadata": None,
+        }
+    )
+
+    rows = asyncio.run(get_runs(_DummyRequest(repo), limit=20, pipeline="collect-dart-corporate-events"))
+
+    assert len(rows) == 1
+    assert rows[0]["pipeline_name"] == "collect-dart-corporate-events"
+
+
+def test_dashboard_runs_filters_by_source_and_status(repo):
+    repo.insert_run(
+        {
+            "run_id": "c8f8fb76-60f1-41a3-9db8-26c3ed07c004",
+            "pipeline_name": "collect-dart-corporate-events",
+            "source_name": "opendart",
+            "window_start": "2026-03-01",
+            "window_end": "2026-03-09",
+            "status": "FAILED",
+            "started_at": "2026-03-09T00:04:00Z",
+            "finished_at": "2026-03-09T00:05:00Z",
+            "success_count": 0,
+            "failure_count": 1,
+            "warning_count": 0,
+            "metadata": None,
+        }
+    )
+    repo.insert_run(
+        {
+            "run_id": "c8f8fb76-60f1-41a3-9db8-26c3ed07c005",
+            "pipeline_name": "collect-dart-corporate-events",
+            "source_name": "opendart",
+            "window_start": "2026-03-01",
+            "window_end": "2026-03-09",
+            "status": "SUCCESS",
+            "started_at": "2026-03-09T00:06:00Z",
+            "finished_at": "2026-03-09T00:07:00Z",
+            "success_count": 3,
+            "failure_count": 0,
+            "warning_count": 0,
+            "metadata": None,
+        }
+    )
+    rows = asyncio.run(get_runs(_DummyRequest(repo), limit=20, source_name="opendart", status="FAILED"))
+    assert len(rows) == 1
+    assert rows[0]["status"] == "FAILED"
+    assert rows[0]["source_name"] == "opendart"
