@@ -1,47 +1,25 @@
-﻿# Documentation Index
+# 문서 인덱스
 
-## 문서 목록
-- 설계: `ARCHITECTURE.md`
-- 소스 수집 계획: `API_COLLECTION_PLAN.md`
-- KRX 수집 API 명세: `KRX_API_COLLECTION_SPEC.md`
-- KRX 실연동 테스트 가이드: `KRX_INTEGRATION_TEST_GUIDE.md`
-- 구현 지시: `IMPLEMENTATION_GUIDE.md`
-- Phase 1 + 조회 인터페이스 설계: `PHASE1_INTERFACE_DESIGN.md`
-- 백테스트 데이터 조회 계약: `BACKTEST_DATA_INTERFACE.md`
-- 벌크 추출 API 규격: `BULK_EXPORT_API_SPEC.md`
-- 스키마 계약: `SCHEMA.md`
-- 범위 점검: `SCOPE_REVIEW.md`
-- 수정주가 구현 계획: `ADJUSTED_PRICE_IMPLEMENTATION_PLAN.md`
-- 수정주가 실행 백로그: `ADJUSTED_PRICE_BACKLOG.md`
-- 실행 DDL: `../sql/platform_schema.sql`
+## 핵심 문서
+- `ARCHITECTURE.md`: 시스템 구조와 책임 경계
+- `SCHEMA.md`: 테이블, 뷰, 제약 조건 계약
+- `QUICKSTART.md`: 로컬 설치 및 실행 절차
+- `DEPLOYMENT_GUIDE.md`: 운영 배포 및 점검 가이드
+- `BACKTEST_DATA_INTERFACE.md`: 백테스트 입력 데이터 계약
+- `PHASE1_INTERFACE_DESIGN.md`: Phase 1 읽기/쓰기 인터페이스 설계
+- `KRX_API_COLLECTION_SPEC.md`: KRX 수집 규칙과 엔드포인트
+- `KRX_INTEGRATION_TEST_GUIDE.md`: 실제 KRX 연동 점검 절차
+- `ADJUSTED_PRICE_IMPLEMENTATION_PLAN.md`: 남은 수정주가 구현 계획
+- `ADJUSTED_PRICE_BACKLOG.md`: 남은 수정주가 백로그
 
-## 문서 역할
-- `ARCHITECTURE.md`
-: 설계 원칙, 책임 경계, Phase 로드맵
-- `API_COLLECTION_PLAN.md`
-: 소스별 수집 범위와 내부 스키마 매핑
-- `IMPLEMENTATION_GUIDE.md`
-: 개발 순서와 Task별 완료 기준
-- `SCHEMA.md`
-: 테이블/뷰/제약의 계약 정의
-- `SCOPE_REVIEW.md`
-: 현재 스코프 적합성 점검 결과
-- `ADJUSTED_PRICE_IMPLEMENTATION_PLAN.md`
-: 배당 제외 수정주가 파이프라인 설계 및 단계별 롤아웃 계획
-- `ADJUSTED_PRICE_BACKLOG.md`
-: 우선순위 기반 구현 백로그와 완료 기준
-- `../sql/platform_schema.sql`
-: 적용 가능한 기준 DDL
+## 권장 읽기 순서
+1. `QUICKSTART.md`
+2. `ARCHITECTURE.md`
+3. `SCHEMA.md`
+4. `BACKTEST_DATA_INTERFACE.md`
+5. 필요한 운영 문서를 추가로 확인
 
 ## 유지보수 규칙
-1. DDL 변경 시 `../sql/platform_schema.sql` 먼저 수정
-2. 계약 변경 시 `SCHEMA.md`와 `IMPLEMENTATION_GUIDE.md` 동시 업데이트
-3. 소스 변경 시 `API_COLLECTION_PLAN.md` 먼저 갱신
-
-
-## ?? ??
-- ???? export ?? ?? ????? ???.
-- ??? ?? ? `rebuild-adjustment-factors --date-from ... --date-to ...`? materialized factor? ????.
-- ?? ??? ?? ??? ???? `collect-dart-corporate-events --rebuild-adjustments --overlap-days 7 ...`? ????.
-- local batch shortcut: just collect-dart-adjusted-local 2026-03-01 2026-03-09 7
-
+- 계약이 바뀌면 `SCHEMA.md`, 관련 인터페이스 문서, 테스트를 함께 갱신합니다.
+- 실행 명령이 바뀌면 `README.md`, `QUICKSTART.md`, `DEPLOYMENT_GUIDE.md`를 함께 갱신합니다.
+- 수정주가 관련 잔여 작업은 구현 계획 문서와 백로그 문서에서만 관리합니다.

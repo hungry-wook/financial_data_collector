@@ -1,45 +1,29 @@
-# KRX Integration Test Guide
+# KRX 연동 테스트 가이드
 
-## 1. Pre-check
-1. KRX Open API 이용신청 승인 완료
-2. 인증키 발급 완료
-3. 대상 API(종목기본/일별매매/지수일별) 사용권한 승인 완료
+## 목적
+실제 KRX OpenAPI 파이프라인이 로컬 Postgres와 정상적으로 동작하는지 확인합니다.
 
-## 2. .env 준비
-필수:
-1. `KRX_AUTH_KEY`
-2. `KRX_BASE_URL` (기본: `https://data-dbg.krx.co.kr`)
-3. `KRX_API_PATH_INSTRUMENTS` (기본: `/svc/apis/sto/ksq_isu_base_info`)
-4. `KRX_API_PATH_DAILY_MARKET` (기본: `/svc/apis/sto/ksq_bydd_trd`)
-5. `KRX_API_PATH_INDEX_DAILY` (기본: `/svc/apis/idx/kosdaq_dd_trd`)
+## 사전 조건
+- 유효한 `KRX_AUTH_KEY`
+- 유효한 `.env`의 `DATABASE_URL`
+- 실행 중인 로컬 Postgres
 
-옵션:
-1. `KRX_TIMEOUT_SEC`
-2. `KRX_MAX_RETRIES`
-3. `KRX_DAILY_LIMIT`
+## 점검 순서
+1. 헬스 체크
+- `just health`
 
-## 3. 테스트 실행 순서
-1. 사전점검
-- `pytest -q tests/test_preflight.py`
-2. 단위 테스트
-- `pytest -q tests/test_krx_client.py`
-3. 실연동 테스트
-- `pytest -q -m integration`
+2. 짧은 수집 구간 실행
+- `uv run collect-krx-data --date-from 2026-03-03 --date-to 2026-03-06`
 
-## 4. 실연동 테스트 판정
-성공 기준:
-1. 응답이 dict 구조로 파싱됨
-2. HTTP 오류 없이 호출 완료
-3. 응답 key 1개 이상 확인
+3. 회귀 테스트 실행
+- `uv run pytest -q tests/test_collect_krx_data.py tests/test_repository_resilience.py`
 
-실패 시 점검:
-1. 인증키 만료/오입력
-2. API path 오입력
-3. 서비스 권한 미승인
-4. 호출 제한 초과
-5. KRX 서버 장애/일시 오류
+4. 결과 확인
+- 대시보드: `http://localhost:8000/dashboard`
+- 또는 `collection_runs` 직접 조회
 
-## 5. 운영 권장
-1. integration 테스트는 CI 기본 파이프라인에서 제외하고 수동/야간 배치로 실행
-2. 실패 시 원인별 재시도 정책(네트워크 vs 인증)을 분리
-3. 응답 스키마가 바뀌면 파서 테스트를 즉시 업데이트
+## 실패 시 확인 항목
+- KRX 키의 유효성 및 권한
+- DB 연결 설정
+- 수집기 로그에서 `OperationalError`가 반복되는지 여부
+- 휴장일에 따른 빈 응답인지 실제 수집 실패인지 구분
