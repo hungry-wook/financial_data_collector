@@ -1,0 +1,4 @@
+interface:
+  display_name: "Windows Patch Fallback"
+  short_description: "Safe Windows edits after apply_patch failures"
+  default_prompt: "Use $windows-patch-fallback to edit a file safely on Windows when apply_patch keeps failing."
