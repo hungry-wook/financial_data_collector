@@ -1,4 +1,4 @@
-﻿import argparse
+import argparse
 import json
 import os
 import re
@@ -87,32 +87,44 @@ def _derive_event_type(base_event_type: str, ds005_row: Dict, doc_text: str = ""
     return base_event_type
 
 
-def _derive_effective_date(event_type: str, filing: Dict, ds005_row: Dict, doc_text: str = "") -> Optional[str]:
-    keys_by_type = {
-        "BONUS_ISSUE": ["lstg_dt", "nstk_lstg_dt", "extshdt"],
-        "BONUS_ISSUE": ["nstk_lstprd", "nstk_dlprd", "nstk_dividrk", "lstg_dt", "nstk_lstg_dt", "extshdt"],
-        "CAPITAL_REDUCTION": ["crsc_nstklstprd", "nstk_lstg_dt", "lstg_dt", "itmsnstk_onsl_dt"],
-        "SPLIT": ["lstg_dt", "itmsnstk_onsl_dt", "dvd_shr_dt"],
-        "SPLIT_MERGER": ["lstg_dt", "itmsnstk_onsl_dt", "mgdt"],
-        "MERGER": ["lstg_dt", "mrgdt", "trfdt", "itmsnstk_onsl_dt"],
-        "STOCK_SWAP": ["lstg_dt", "trfdt", "itmsnstk_onsl_dt"],
-        "STOCK_TRANSFER": ["lstg_dt", "trfdt", "itmsnstk_onsl_dt"],
-        "RIGHTS_ISSUE": ["nstk_lstg_dt", "lstg_dt", "pay_dt"],
-        "RIGHTS_ISSUE_SHAREHOLDER": ["nstk_lstg_dt", "lstg_dt", "pay_dt"],
-        "RIGHTS_ISSUE_PUBLIC": ["nstk_lstg_dt", "lstg_dt", "pay_dt"],
-        "RIGHTS_ISSUE_THIRD_PARTY": ["nstk_lstg_dt", "lstg_dt", "pay_dt"],
-        "RIGHTS_BONUS_ISSUE": ["nstk_lstg_dt", "lstg_dt", "pay_dt"],
-    }
-    for key in keys_by_type.get(event_type, []):
-        resolved = _coerce_iso_date((ds005_row or {}).get(key))
-        if resolved:
-            return resolved
+def _derive_legal_effective_date(event_type: str, filing: Dict, ds005_row: Dict, doc_text: str = "") -> Optional[str]:
+    inferred = infer_effective_date(event_type=event_type, text=doc_text, ds005_row={})
+    if inferred:
+        return inferred
     inferred = infer_effective_date(event_type=event_type, text=doc_text, ds005_row=ds005_row or {})
     if inferred:
         return inferred
-    if event_type == "RIGHTS_ISSUE_THIRD_PARTY":
-        return None
+    if event_type in {"MERGER", "STOCK_SWAP", "STOCK_TRANSFER"}:
+        return _filing_effective_date(filing)
     return None
+
+
+def _derive_adjustment_apply_date(
+    event_type: str,
+    filing: Dict,
+    ds005_row: Dict,
+    doc_text: str = "",
+    legal_effective_date: Optional[str] = None,
+) -> Optional[str]:
+    listing_like_date = _extract_listing_like_date(event_type, ds005_row)
+    if listing_like_date:
+        return listing_like_date
+    if event_type in {"RIGHTS_ISSUE_PUBLIC", "RIGHTS_ISSUE_THIRD_PARTY"}:
+        return None
+    if legal_effective_date:
+        return legal_effective_date
+    return _filing_effective_date(filing)
+
+
+def _derive_effective_date(event_type: str, filing: Dict, ds005_row: Dict, doc_text: str = "") -> Optional[str]:
+    legal_effective_date = _derive_legal_effective_date(event_type, filing, ds005_row, doc_text)
+    return _derive_adjustment_apply_date(
+        event_type,
+        filing,
+        ds005_row,
+        doc_text,
+        legal_effective_date=legal_effective_date,
+    )
 
 
 def _extract_listing_like_date(event_type: str, ds005_row: Dict) -> Optional[str]:
@@ -661,6 +673,7 @@ def collect_corporate_events(
             continue
 
         announce_date = _filing_announce_date(filing)
+        legal_effective_date = None
         effective_date = None
         raw_factor = None
         doc_text = ""
@@ -805,9 +818,18 @@ def collect_corporate_events(
                     }
                 )
 
+        if not legal_effective_date:
+            legal_effective_date = _derive_legal_effective_date(event_type, filing, ds005_row, doc_text)
         if not effective_date:
-            effective_date = _derive_effective_date(event_type, filing, ds005_row, doc_text)
+            effective_date = _derive_adjustment_apply_date(
+                event_type,
+                filing,
+                ds005_row,
+                doc_text,
+                legal_effective_date=legal_effective_date,
+            )
 
+        payload = dict(filing)
         status, effective_date, activation_issue = _apply_activation_rules(
             event_type=event_type,
             status=status,
@@ -844,13 +866,14 @@ def collect_corporate_events(
             chain_factor_cache[chain_key] = raw_factor
 
         event_id = f"dart:{rcept_no}:{event_type}"
-        payload = dict(filing)
         payload["factor_rule"] = factor_rule
         payload["mapping_source"] = mapping_source
         payload["revision_anchor"] = revision_anchor
         payload["ds005_match_type"] = ds005_match_type
         payload["announce_date_rule"] = "rcept_dt" if announce_date else None
-        payload["effective_date_rule"] = "derived" if effective_date else None
+        payload["legal_effective_date"] = legal_effective_date
+        payload["adjustment_apply_date"] = effective_date
+        payload["effective_date_rule"] = "adjustment_apply_date" if effective_date else None
         if activation_issue:
             payload["activation_issue"] = activation_issue
         if ds005_row:
@@ -974,7 +997,14 @@ def repair_corporate_event_timings(
         if payload.get("report_nm") and not ds005_row.get("report_nm"):
             ds005_row["report_nm"] = payload.get("report_nm")
         derived_event_type = _derive_event_type(str(row.get("event_type") or ""), ds005_row, "")
-        derived_effective_date = _derive_effective_date(derived_event_type, payload, ds005_row, "") or row.get("effective_date")
+        derived_legal_effective_date = _derive_legal_effective_date(derived_event_type, payload, ds005_row, "")
+        derived_effective_date = _derive_adjustment_apply_date(
+            derived_event_type,
+            payload,
+            ds005_row,
+            "",
+            legal_effective_date=derived_legal_effective_date,
+        ) or row.get("effective_date")
         new_status, derived_effective_date, activation_issue = _apply_activation_rules(
             event_type=derived_event_type,
             status=str(row.get("status") or "NEEDS_REVIEW"),
@@ -991,6 +1021,7 @@ def repair_corporate_event_timings(
             activation_issue = "duplicate_split_merger_event"
         if payload.get("derived_event_type") != derived_event_type:
             payload["derived_event_type"] = derived_event_type
+        payload["repair_legal_effective_date"] = derived_legal_effective_date
         payload["repair_effective_date"] = derived_effective_date
         payload["repair_status"] = new_status
         if activation_issue:

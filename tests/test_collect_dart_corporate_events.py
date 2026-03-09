@@ -1,6 +1,6 @@
-﻿from datetime import date
+from datetime import date
 
-from financial_data_collector.collect_dart_corporate_events import collect_corporate_events, collect_corporate_events_and_rebuild_factors, repair_corporate_event_timings, run_dart_corporate_event_collection
+from financial_data_collector.collect_dart_corporate_events import _derive_adjustment_apply_date, _derive_legal_effective_date, collect_corporate_events, collect_corporate_events_and_rebuild_factors, repair_corporate_event_timings, run_dart_corporate_event_collection
 from financial_data_collector.collectors import InstrumentCollector
 
 BONUS_REPORT = "\uC8FC\uC694\uC0AC\uD56D\uBCF4\uACE0\uC11C(\uBB34\uC0C1\uC99D\uC790\uACB0\uC815)"
@@ -656,3 +656,40 @@ def test_repair_corporate_event_timings_blocks_document_only_rights_issue_withou
     row = repo.query("SELECT status, payload->>'activation_issue' AS activation_issue FROM corporate_events WHERE source_event_id = %s", ("doconly1",))[0]
     assert row["status"] == "NEEDS_REVIEW"
     assert row["activation_issue"] == "missing_pricing_inputs"
+
+
+def test_collect_corporate_events_stores_legal_and_apply_dates(repo):
+    _seed_instrument(repo)
+
+    collect_corporate_events(
+        repo=repo,
+        client=_FakeCapitalReductionDs005Client(),
+        bgn_de=date(2026, 3, 8),
+        end_de=date(2026, 3, 8),
+        verify_document=False,
+    )
+
+    row = repo.query(
+        "SELECT effective_date, payload->>'legal_effective_date' AS legal_effective_date, payload->>'adjustment_apply_date' AS adjustment_apply_date FROM corporate_events WHERE source_event_id = %s",
+        ("20260308000007",),
+    )[0]
+    assert row["effective_date"] == "2026-04-30"
+    assert row["legal_effective_date"] == "2026-04-30"
+    assert row["adjustment_apply_date"] == "2026-04-30"
+
+
+def test_derive_adjustment_apply_date_can_differ_from_legal_effective_date():
+    ds005_row = {"crsc_nstklstprd": "2026-04-30"}
+    doc_text = "\uD6A8\uB825\uBC1C\uC0DD\uC77C 2026\uB144 04\uC6D4 15\uC77C"
+
+    legal_effective_date = _derive_legal_effective_date("CAPITAL_REDUCTION", {}, ds005_row, doc_text)
+    adjustment_apply_date = _derive_adjustment_apply_date(
+        "CAPITAL_REDUCTION",
+        {},
+        ds005_row,
+        doc_text,
+        legal_effective_date=legal_effective_date,
+    )
+
+    assert legal_effective_date == "2026-04-15"
+    assert adjustment_apply_date == "2026-04-30"
