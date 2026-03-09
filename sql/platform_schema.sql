@@ -1,4 +1,4 @@
-﻿-- platform_schema.sql
+-- platform_schema.sql
 -- General-purpose financial time-series ingestion schema
 -- DB: PostgreSQL 14+
 
@@ -259,46 +259,6 @@ SELECT market_code,
 FROM trading_calendar;
 
 -- =====================================================
--- Phase 2: Reliability (additive)
--- =====================================================
-
-CREATE TABLE run_partitions (
-    partition_id UUID PRIMARY KEY,
-    run_id UUID NOT NULL,
-    partition_key VARCHAR(120) NOT NULL,
-    status VARCHAR(20) NOT NULL,
-    retry_count INTEGER NOT NULL DEFAULT 0,
-    last_error_code VARCHAR(50) NULL,
-    last_error_message VARCHAR(500) NULL,
-    next_retry_at TIMESTAMP NULL,
-    started_at TIMESTAMP NULL,
-    finished_at TIMESTAMP NULL,
-    UNIQUE (run_id, partition_key),
-    CHECK (status IN ('PENDING', 'RUNNING', 'SUCCESS', 'FAILED'))
-);
-
-ALTER TABLE run_partitions
-ADD CONSTRAINT fk_run_partitions_run
-FOREIGN KEY (run_id) REFERENCES collection_runs(run_id);
-
-CREATE TABLE quality_metrics (
-    metric_id BIGSERIAL PRIMARY KEY,
-    run_id UUID NOT NULL,
-    dataset_name VARCHAR(50) NOT NULL,
-    metric_name VARCHAR(50) NOT NULL,
-    metric_value NUMERIC(12,6) NOT NULL,
-    threshold_value NUMERIC(12,6) NULL,
-    measured_at TIMESTAMP NOT NULL
-);
-
-ALTER TABLE quality_metrics
-ADD CONSTRAINT fk_quality_metrics_run
-FOREIGN KEY (run_id) REFERENCES collection_runs(run_id);
-
-CREATE INDEX idx_partitions_status_retry ON run_partitions(status, next_retry_at);
-CREATE INDEX idx_quality_metrics_run_name ON quality_metrics(run_id, dataset_name, metric_name);
-
--- =====================================================
 -- Phase 3: Domain Expansion (additive)
 -- =====================================================
 
@@ -328,48 +288,6 @@ FOREIGN KEY (run_id) REFERENCES collection_runs(run_id);
 
 CREATE INDEX idx_corporate_events_instrument_date ON corporate_events(instrument_id, effective_date);
 CREATE INDEX idx_corporate_events_type_date ON corporate_events(event_type, effective_date);
-
--- =====================================================
--- Phase 4: Platform Hardening (additive)
--- =====================================================
-
-CREATE TABLE source_policies (
-    policy_id UUID PRIMARY KEY,
-    domain_name VARCHAR(30) NOT NULL,
-    source_name VARCHAR(30) NOT NULL,
-    priority_rank INTEGER NOT NULL,
-    valid_from TIMESTAMP NOT NULL,
-    valid_to TIMESTAMP NULL,
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    CHECK (priority_rank >= 1)
-);
-
-CREATE TABLE dataset_snapshots (
-    snapshot_id UUID PRIMARY KEY,
-    snapshot_date DATE NOT NULL,
-    cutoff_time TIMESTAMP NOT NULL,
-    schema_version VARCHAR(32) NOT NULL,
-    status VARCHAR(20) NOT NULL,
-    created_at TIMESTAMP NOT NULL,
-    CHECK (status IN ('ACTIVE', 'STALE', 'ARCHIVED'))
-);
-
-CREATE TABLE snapshot_runs (
-    snapshot_id UUID NOT NULL,
-    run_id UUID NOT NULL,
-    PRIMARY KEY (snapshot_id, run_id)
-);
-
-ALTER TABLE snapshot_runs
-ADD CONSTRAINT fk_snapshot_runs_snapshot
-FOREIGN KEY (snapshot_id) REFERENCES dataset_snapshots(snapshot_id);
-
-ALTER TABLE snapshot_runs
-ADD CONSTRAINT fk_snapshot_runs_run
-FOREIGN KEY (run_id) REFERENCES collection_runs(run_id);
-
-CREATE INDEX idx_source_policies_domain_active ON source_policies(domain_name, is_active, valid_from DESC);
-CREATE INDEX idx_dataset_snapshots_date_status ON dataset_snapshots(snapshot_date, status);
 
 -- =====================================================
 -- Schema comments: tables and columns
@@ -462,27 +380,6 @@ COMMENT ON COLUMN data_quality_issues.detected_at IS 'UTC timestamp when issue w
 COMMENT ON COLUMN data_quality_issues.run_id IS 'Ingestion run identifier.';
 COMMENT ON COLUMN data_quality_issues.resolved_at IS 'UTC timestamp when issue was resolved.';
 
-COMMENT ON TABLE run_partitions IS 'Partition-level execution units for reliable retries.';
-COMMENT ON COLUMN run_partitions.partition_id IS 'Partition identifier.';
-COMMENT ON COLUMN run_partitions.run_id IS 'Parent ingestion run identifier.';
-COMMENT ON COLUMN run_partitions.partition_key IS 'Logical key representing partition scope.';
-COMMENT ON COLUMN run_partitions.status IS 'Partition status: PENDING, RUNNING, SUCCESS, FAILED.';
-COMMENT ON COLUMN run_partitions.retry_count IS 'Number of retries for this partition.';
-COMMENT ON COLUMN run_partitions.last_error_code IS 'Last error code observed.';
-COMMENT ON COLUMN run_partitions.last_error_message IS 'Last error message observed.';
-COMMENT ON COLUMN run_partitions.next_retry_at IS 'UTC timestamp for next retry scheduling.';
-COMMENT ON COLUMN run_partitions.started_at IS 'UTC timestamp when partition execution started.';
-COMMENT ON COLUMN run_partitions.finished_at IS 'UTC timestamp when partition execution finished.';
-
-COMMENT ON TABLE quality_metrics IS 'Run-level quality measurements by dataset and metric.';
-COMMENT ON COLUMN quality_metrics.metric_id IS 'Surrogate metric identifier.';
-COMMENT ON COLUMN quality_metrics.run_id IS 'Ingestion run identifier.';
-COMMENT ON COLUMN quality_metrics.dataset_name IS 'Dataset name for the metric.';
-COMMENT ON COLUMN quality_metrics.metric_name IS 'Metric name, for example completeness.';
-COMMENT ON COLUMN quality_metrics.metric_value IS 'Measured metric value.';
-COMMENT ON COLUMN quality_metrics.threshold_value IS 'Configured threshold value, if any.';
-COMMENT ON COLUMN quality_metrics.measured_at IS 'UTC timestamp when metric was recorded.';
-
 COMMENT ON TABLE corporate_events IS 'Normalized corporate event records for domain expansion.';
 COMMENT ON COLUMN corporate_events.event_id IS 'Stable event identifier.';
 COMMENT ON COLUMN corporate_events.event_version IS 'Monotonic event version number.';
@@ -495,27 +392,6 @@ COMMENT ON COLUMN corporate_events.source_name IS 'Source system name.';
 COMMENT ON COLUMN corporate_events.collected_at IS 'UTC timestamp when event was collected.';
 COMMENT ON COLUMN corporate_events.run_id IS 'Ingestion run identifier.';
 COMMENT ON COLUMN corporate_events.payload IS 'Raw normalized payload for extensibility.';
-
-COMMENT ON TABLE source_policies IS 'Source priority and validity policy by data domain.';
-COMMENT ON COLUMN source_policies.policy_id IS 'Policy identifier.';
-COMMENT ON COLUMN source_policies.domain_name IS 'Data domain name.';
-COMMENT ON COLUMN source_policies.source_name IS 'Source system name.';
-COMMENT ON COLUMN source_policies.priority_rank IS 'Priority rank where lower means higher priority.';
-COMMENT ON COLUMN source_policies.valid_from IS 'UTC timestamp policy becomes effective.';
-COMMENT ON COLUMN source_policies.valid_to IS 'UTC timestamp policy expires.';
-COMMENT ON COLUMN source_policies.is_active IS 'Whether this policy is currently active.';
-
-COMMENT ON TABLE dataset_snapshots IS 'Immutable snapshot metadata for delivery versioning.';
-COMMENT ON COLUMN dataset_snapshots.snapshot_id IS 'Snapshot identifier.';
-COMMENT ON COLUMN dataset_snapshots.snapshot_date IS 'Business date represented by snapshot.';
-COMMENT ON COLUMN dataset_snapshots.cutoff_time IS 'Data cutoff timestamp for snapshot.';
-COMMENT ON COLUMN dataset_snapshots.schema_version IS 'Schema/view version used by snapshot.';
-COMMENT ON COLUMN dataset_snapshots.status IS 'Snapshot status: ACTIVE, STALE, ARCHIVED.';
-COMMENT ON COLUMN dataset_snapshots.created_at IS 'UTC timestamp when snapshot was created.';
-
-COMMENT ON TABLE snapshot_runs IS 'Mapping table from snapshots to included ingestion runs.';
-COMMENT ON COLUMN snapshot_runs.snapshot_id IS 'Snapshot identifier.';
-COMMENT ON COLUMN snapshot_runs.run_id IS 'Included ingestion run identifier.';
 
 COMMENT ON VIEW core_market_dataset_v1 IS 'Phase 1 consumer view for instrument daily data with master attributes.';
 COMMENT ON VIEW benchmark_dataset_v1 IS 'Phase 1 consumer view for benchmark daily index data.';

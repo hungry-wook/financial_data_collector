@@ -1,4 +1,4 @@
-﻿# 데이터 소스 수집 계획 (Generalized)
+# 데이터 소스 수집 계획 (Generalized)
 
 ## 1. 목적
 본 문서는 데이터 수집 소스와 내부 스키마의 연결 기준을 정의한다.
@@ -49,7 +49,6 @@
 
 ## Phase 2
 - Phase 1 + 배치 신뢰성 메타
-- `run_partitions`, `quality_metrics`
 
 ## Phase 3
 - Phase 2 + Corporate Event Source

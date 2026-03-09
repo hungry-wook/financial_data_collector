@@ -1,4 +1,4 @@
-﻿# 스키마 명세 (Generalized, Phase-based)
+# 스키마 명세 (Generalized, Phase-based)
 
 ## 1. 목적
 이 문서는 데이터 수집 레포의 스키마 계약을 정의한다.
@@ -125,8 +125,6 @@
 
 ## 4. Phase 2 확장 (Reliability)
 추가 테이블:
-1. `run_partitions`
-2. `quality_metrics`
 
 목적:
 - 재시도 자동화
@@ -148,9 +146,6 @@
 
 ## 6. Phase 4 확장 (Platform Hardening)
 추가 테이블:
-1. `source_policies`
-2. `dataset_snapshots`
-3. `snapshot_runs`
 
 목적:
 - 멀티소스 정책
