@@ -35,3 +35,4 @@
 - `series_type`: `raw`, `adjusted`, `both`
 - 선택 파라미터 `as_of_timestamp`
 - export는 미리 구축된 계수만 읽고 즉시 재계산하지 않습니다.
+- `adjusted`/`both` export? ??? materialized factor? ?? ??? ?????.

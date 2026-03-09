@@ -43,6 +43,7 @@ Validation rules:
 2. `output_format` in `["parquet"]` for phase 1
 3. `market_codes` required (at least one)
 4. `index_codes` required (at least one)
+5. `series_type` is `adjusted` or `both` and required materialized adjustment factors are missing -> job fails during execution
 
 ## 3.2 Get Job Status
 `GET /api/v1/backtest/exports/{job_id}`
@@ -207,7 +208,8 @@ Universe validity rule for `instrument_daily.parquet`:
 1. Partial files must be written to temp path first.
 2. Move to final `output_path` only after all files succeed.
 3. On failure, job status is `FAILED` with `error_code` and `error_message`.
-4. Same request may create a new `job_id`; dedupe is optional in phase 1.
+4. `adjusted` export does not silently fall back to raw rows when factor coverage is incomplete.
+5. Same request may create a new `job_id`; dedupe is optional in phase 1.
 
 ## 8. Recommended Implementation Stack
 1. Python + FastAPI (API)
