@@ -1181,6 +1181,63 @@ class Repository:
             )
             return int(cur.rowcount or 0)
 
+    def delete_outdated_revision_chain_events(self, chain_keys: Iterable[Dict[str, str]]) -> int:
+        normalized_keys = []
+        seen = set()
+        for key in chain_keys:
+            corp_code = str((key or {}).get("corp_code") or "").strip()
+            event_type = str((key or {}).get("event_type") or "").strip().upper()
+            revision_anchor = str((key or {}).get("revision_anchor") or "").strip()
+            if not corp_code or not event_type or not revision_anchor:
+                continue
+            dedupe_key = (corp_code, event_type, revision_anchor)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            normalized_keys.append(dedupe_key)
+
+        if not normalized_keys:
+            return 0
+
+        values_sql = ", ".join(["(%s, %s, %s)"] * len(normalized_keys))
+        params: List[str] = []
+        for corp_code, event_type, revision_anchor in normalized_keys:
+            params.extend([corp_code, event_type, revision_anchor])
+
+        with self.connect() as conn:
+            cur = conn.execute(
+                f"""
+                WITH target_chains(corp_code, event_type, revision_anchor) AS (
+                    VALUES {values_sql}
+                ),
+                ranked AS (
+                    SELECT e.event_id,
+                           e.event_version,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY e.payload->>'corp_code', e.event_type, e.payload->>'revision_anchor'
+                               ORDER BY e.source_event_id DESC NULLS LAST,
+                                        e.collected_at DESC,
+                                        e.event_id DESC,
+                                        e.event_version DESC
+                           ) AS rn
+                    FROM corporate_events e
+                    JOIN target_chains t
+                      ON e.payload->>'corp_code' = t.corp_code
+                     AND e.event_type = t.event_type
+                     AND e.payload->>'revision_anchor' = t.revision_anchor
+                    WHERE COALESCE(e.payload->>'corp_code', '') <> ''
+                      AND COALESCE(e.payload->>'revision_anchor', '') <> ''
+                )
+                DELETE FROM corporate_events e
+                USING ranked r
+                WHERE e.event_id = r.event_id
+                  AND e.event_version = r.event_version
+                  AND r.rn > 1
+                """,
+                tuple(params),
+            )
+            return int(cur.rowcount or 0)
+
     def resolve_halted_issues(self, resolved_at: Optional[str] = None) -> int:
         resolved_time = resolved_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         with self.connect() as conn:

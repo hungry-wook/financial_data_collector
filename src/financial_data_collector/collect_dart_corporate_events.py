@@ -908,6 +908,14 @@ def collect_corporate_events(
 
     deleted_superseded = repo.delete_corporate_events_by_source_ids(refresh_source_ids)
     event_count = repo.upsert_corporate_events(events)
+    revision_chain_deleted = repo.delete_outdated_revision_chain_events(
+        {
+            "corp_code": str((e.get("payload") or {}).get("corp_code") or "").strip(),
+            "event_type": str(e.get("event_type") or "").strip(),
+            "revision_anchor": str((e.get("payload") or {}).get("revision_anchor") or "").strip(),
+        }
+        for e in events
+    )
     validation_count = repo.insert_event_validation_results(validations)
 
     return {
@@ -917,6 +925,7 @@ def collect_corporate_events(
         "active_events": len([e for e in events if e["status"] == "ACTIVE"]),
         "needs_review_events": len([e for e in events if e["status"] != "ACTIVE"]),
         "superseded_deleted": deleted_superseded,
+        "revision_chain_deleted": revision_chain_deleted,
     }
 
 

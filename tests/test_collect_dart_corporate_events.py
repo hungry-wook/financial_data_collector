@@ -267,6 +267,45 @@ class _FakeCapitalReductionDs005Client(_FakeClient):
         }
 
 
+class _FakeRevisionWindowClient(_FakeClient):
+    def __init__(self, report_nm: str, rcept_no: str, rcept_dt: str):
+        super().__init__()
+        self.report_nm = report_nm
+        self.rcept_no = rcept_no
+        self.rcept_dt = rcept_dt
+
+    def list_filings(self, **kwargs):
+        self.calls.append(("list", kwargs))
+        return {
+            "status": "000",
+            "total_count": 1,
+            "list": [
+                {
+                    "corp_code": "x",
+                    "corp_name": KORP,
+                    "stock_code": "123456",
+                    "corp_cls": "K",
+                    "report_nm": self.report_nm,
+                    "rcept_no": self.rcept_no,
+                    "rcept_dt": self.rcept_dt,
+                }
+            ],
+        }
+
+    def get_document_zip(self, rcept_no):
+        self.calls.append(("doc", {"rcept_no": rcept_no}))
+        import io
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(
+                "a.html",
+                "<html><body>\uC720\uC0C1\uC99D\uC790 \uACB0\uC815 1. \uC2E0\uC8FC\uC758 \uC885\uB958\uC640 \uC218 \uBCF4\uD1B5\uC8FC\uC2DD (\uC8FC) 100 2. 1\uC8FC\uB2F9 \uC561\uBA74\uAC00\uC561 (\uC6D0) 500 3. \uC99D\uC790\uC804 \uBC1C\uD589\uC8FC\uC2DD\uCD1D\uC218 (\uC8FC) \uBCF4\uD1B5\uC8FC\uC2DD (\uC8FC) 900 \uC2E0\uC8FC \uC0C1\uC7A5 \uC608\uC815\uC77C 2026\uB144 03\uC6D4 08\uC77C</body></html>",
+            )
+        return buf.getvalue()
+
+
 class _FakeRightsBonusClient(_FakeClient):
     def list_filings(self, **kwargs):
         self.calls.append(("list", kwargs))
@@ -389,6 +428,52 @@ def test_collect_corporate_events_recovers_factor_from_remote_revision_chain(rep
     assert rows[0]["status"] == "ACTIVE"
     assert rows[0]["raw_factor"] == 0.9
     assert rows[0]["factor_rule"] == "remote_chain_rights_issue_keyword_sections"
+
+
+def test_collect_corporate_events_deduplicates_revision_chain_across_windows(repo):
+    _seed_instrument(repo)
+
+    older = _FakeRevisionWindowClient(
+        report_nm=RIGHTS_REPORT,
+        rcept_no="20260201000001",
+        rcept_dt="20260201",
+    )
+    newer = _FakeRevisionWindowClient(
+        report_nm=RIGHTS_ATTACH_REPORT,
+        rcept_no="20260308000004",
+        rcept_dt="20260308",
+    )
+
+    first = collect_corporate_events(
+        repo=repo,
+        client=older,
+        bgn_de=date(2026, 2, 1),
+        end_de=date(2026, 2, 1),
+        verify_document=True,
+    )
+    second = collect_corporate_events(
+        repo=repo,
+        client=newer,
+        bgn_de=date(2026, 3, 8),
+        end_de=date(2026, 3, 8),
+        verify_document=True,
+    )
+
+    assert first["events_upserted"] == 1
+    assert second["events_upserted"] == 1
+    assert second["revision_chain_deleted"] == 1
+
+    rows = repo.query(
+        """
+        SELECT source_event_id
+        FROM corporate_events
+        WHERE source_event_id IN ('20260201000001', '20260308000004')
+          AND event_type = 'RIGHTS_ISSUE'
+        ORDER BY source_event_id
+        """
+    )
+    assert [row["source_event_id"] for row in rows] == ["20260308000004"]
+
 
 
 def test_collect_corporate_events_maps_rights_bonus_before_bonus(repo):
