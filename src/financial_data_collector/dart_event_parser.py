@@ -1,4 +1,4 @@
-﻿import io
+import io
 import re
 import zipfile
 from html import unescape
@@ -28,6 +28,15 @@ def _strip_tags(text: str) -> str:
     return plain.strip()
 
 
+def _decode_document_bytes(raw: bytes) -> str:
+    for encoding in ("utf-8", "cp949", "euc-kr"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="ignore")
+
+
 def extract_text_from_document_zip(body: bytes) -> str:
     with zipfile.ZipFile(io.BytesIO(body)) as zf:
         names = [n for n in zf.namelist() if n.lower().endswith((".xml", ".xhtml", ".html", ".htm", ".txt"))]
@@ -39,7 +48,7 @@ def extract_text_from_document_zip(body: bytes) -> str:
                 raw = zf.read(name)
             except KeyError:
                 continue
-            text = raw.decode("utf-8", errors="ignore")
+            text = _decode_document_bytes(raw)
             chunks.append(_strip_tags(text))
         return " ".join([c for c in chunks if c]).strip()
 

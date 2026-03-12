@@ -13,6 +13,18 @@ def test_extract_text_from_document_zip_reads_html_payload():
     assert "1주당 0.5주" in text
 
 
+def test_extract_text_from_document_zip_decodes_cp949_xml_payload():
+    xml_text = (
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+        "<DOC><P>\uc8fc\uc694\uc0ac\ud56d\ubcf4\uace0\uc11c(\ubd84\ud560(\ubd84\ud560\ud569\ubcd1)\uacb0\uc815)</P>"
+        "<P>\uc0bc\uc131\uc804\uc790\uc8fc\uc2dd\ud68c\uc0ac</P></DOC>"
+    )
+    body = _zip_single_bytes("doc.xml", xml_text.encode("cp949"))
+    text = extract_text_from_document_zip(body)
+    assert "\uc8fc\uc694\uc0ac\ud56d\ubcf4\uace0\uc11c(\ubd84\ud560(\ubd84\ud560\ud569\ubcd1)\uacb0\uc815)" in text
+    assert "\uc0bc\uc131\uc804\uc790\uc8fc\uc2dd\ud68c\uc0ac" in text
+
+
 def test_infer_raw_factor_bonus_issue():
     factor, rule = infer_raw_factor("BONUS_ISSUE", "무상증자 1주당 0.5주 배정")
     assert round(factor, 6) == round(1 / 1.5, 6)
@@ -82,6 +94,13 @@ def test_infer_event_status_detects_withdrawn_event():
     status, rule = infer_event_status("RIGHTS_ISSUE", text)
     assert status == "REJECTED"
     assert rule == "event_withdrawn_or_cancelled"
+
+
+def _zip_single_bytes(name: str, payload: bytes) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(name, payload)
+    return buf.getvalue()
 
 
 def _zip_single(name: str, text: str) -> bytes:
