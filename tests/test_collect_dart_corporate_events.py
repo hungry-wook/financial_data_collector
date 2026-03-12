@@ -1,6 +1,6 @@
 from datetime import date
 
-from financial_data_collector.collect_dart_corporate_events import _derive_adjustment_apply_date, _derive_legal_effective_date, collect_corporate_events, collect_corporate_events_and_rebuild_factors, repair_corporate_event_timings, run_dart_corporate_event_collection
+from financial_data_collector.collect_dart_corporate_events import _derive_adjustment_apply_date, _derive_legal_effective_date, _map_event_type, collect_corporate_events, collect_corporate_events_and_rebuild_factors, repair_corporate_event_timings, run_dart_corporate_event_collection
 from financial_data_collector.collectors import InstrumentCollector
 
 BONUS_REPORT = "\uC8FC\uC694\uC0AC\uD56D\uBCF4\uACE0\uC11C(\uBB34\uC0C1\uC99D\uC790\uACB0\uC815)"
@@ -9,6 +9,19 @@ RIGHTS_REPORT = "\uC8FC\uC694\uC0AC\uD56D\uBCF4\uACE0\uC11C(\uC720\uC0C1\uC99D\u
 RIGHTS_ATTACH_REPORT = "[\uCCA8\uBD80\uC815\uC815]\uC8FC\uC694\uC0AC\uD56D\uBCF4\uACE0\uC11C(\uC720\uC0C1\uC99D\uC790\uACB0\uC815)"
 RIGHTS_BONUS_REPORT = "\uC8FC\uC694\uC0AC\uD56D\uBCF4\uACE0\uC11C(\uC720\uBB34\uC0C1\uC99D\uC790\uACB0\uC815)"
 KORP = "\uC0D8\uD50C"
+
+
+def test_map_event_type_matches_korean_report_names():
+    assert _map_event_type("주요사항보고서(유무상증자결정)") == "RIGHTS_BONUS_ISSUE"
+    assert _map_event_type("주요사항보고서(무상증자결정)") == "BONUS_ISSUE"
+    assert _map_event_type("주요사항보고서(유상증자결정)") == "RIGHTS_ISSUE"
+    assert _map_event_type("주요사항보고서(감자결정)") == "CAPITAL_REDUCTION"
+    assert _map_event_type("주요사항보고서(분할합병결정)") == "SPLIT_MERGER"
+    assert _map_event_type("주요사항보고서(회사합병결정)") == "MERGER"
+    assert _map_event_type("주요사항보고서(액면분할결정)") == "SPLIT"
+    assert _map_event_type("주요사항보고서(회사분할결정)") == "SPLIT"
+    assert _map_event_type("주요사항보고서(주식교환결정)") == "STOCK_SWAP"
+    assert _map_event_type("주요사항보고서(주식이전결정)") == "STOCK_TRANSFER"
 
 
 class _FakeClient:
