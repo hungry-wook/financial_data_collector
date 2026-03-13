@@ -1190,22 +1190,28 @@ class Repository:
         )
         return rows[0]["instrument_id"] if rows else None
 
-    def get_latest_factor_for_chain(self, corp_code: str, event_type: str, revision_anchor: str) -> Optional[float]:
+    def get_latest_factor_for_chain(self, corp_code: str, event_type: str, revision_anchor: str, chain_date: Optional[str] = None) -> Optional[float]:
         if not corp_code or not event_type or not revision_anchor:
             return None
+        params = [corp_code, event_type, revision_anchor]
+        chain_date_clause = ''
+        if chain_date:
+            chain_date_clause = " AND COALESCE(effective_date, announce_date) = %s::date"
+            params.append(chain_date)
         rows = self.query(
-            """
+            f"""
             SELECT raw_factor
             FROM corporate_events
             WHERE payload->>'corp_code' = %s
               AND event_type = %s
               AND payload->>'revision_anchor' = %s
+              {chain_date_clause}
               AND status = 'ACTIVE'
               AND raw_factor IS NOT NULL
             ORDER BY collected_at DESC
             LIMIT 1
             """,
-            (corp_code, event_type, revision_anchor),
+            tuple(params),
         )
         if not rows:
             return None
@@ -1232,9 +1238,10 @@ class Repository:
             corp_code = str((key or {}).get("corp_code") or "").strip()
             event_type = str((key or {}).get("event_type") or "").strip().upper()
             revision_anchor = str((key or {}).get("revision_anchor") or "").strip()
-            if not corp_code or not event_type or not revision_anchor:
+            chain_date = str((key or {}).get("chain_date") or "").strip()
+            if not corp_code or not event_type or not revision_anchor or not chain_date:
                 continue
-            dedupe_key = (corp_code, event_type, revision_anchor)
+            dedupe_key = (corp_code, event_type, revision_anchor, chain_date)
             if dedupe_key in seen:
                 continue
             seen.add(dedupe_key)
@@ -1243,22 +1250,22 @@ class Repository:
         if not normalized_keys:
             return 0
 
-        values_sql = ", ".join(["(%s, %s, %s)"] * len(normalized_keys))
+        values_sql = ", ".join(["(%s, %s, %s, %s)"] * len(normalized_keys))
         params: List[str] = []
-        for corp_code, event_type, revision_anchor in normalized_keys:
-            params.extend([corp_code, event_type, revision_anchor])
+        for corp_code, event_type, revision_anchor, chain_date in normalized_keys:
+            params.extend([corp_code, event_type, revision_anchor, chain_date])
 
         with self.connect() as conn:
             cur = conn.execute(
                 f"""
-                WITH target_chains(corp_code, event_type, revision_anchor) AS (
+                WITH target_chains(corp_code, event_type, revision_anchor, chain_date) AS (
                     VALUES {values_sql}
                 ),
                 ranked AS (
                     SELECT e.event_id,
                            e.event_version,
                            ROW_NUMBER() OVER (
-                               PARTITION BY e.payload->>'corp_code', e.event_type, e.payload->>'revision_anchor'
+                               PARTITION BY e.payload->>'corp_code', e.event_type, e.payload->>'revision_anchor', COALESCE(e.effective_date, e.announce_date)
                                ORDER BY e.source_event_id DESC NULLS LAST,
                                         e.collected_at DESC,
                                         e.event_id DESC,
@@ -1269,6 +1276,7 @@ class Repository:
                       ON e.payload->>'corp_code' = t.corp_code
                      AND e.event_type = t.event_type
                      AND e.payload->>'revision_anchor' = t.revision_anchor
+                     AND COALESCE(e.effective_date, e.announce_date) = t.chain_date::date
                     WHERE COALESCE(e.payload->>'corp_code', '') <> ''
                       AND COALESCE(e.payload->>'revision_anchor', '') <> ''
                 )

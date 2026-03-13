@@ -523,6 +523,20 @@ def _infer_market_split_effective_date(
     )
 
 
+def _revision_chain_key(
+    corp_code: str,
+    event_type: str,
+    revision_anchor: str,
+    chain_date: Optional[str],
+) -> Tuple[str, str, str, str]:
+    return (
+        str(corp_code or '').strip(),
+        str(event_type or '').strip().upper(),
+        str(revision_anchor or '').strip(),
+        str(chain_date or '').strip(),
+    )
+
+
 def collect_corporate_events_and_rebuild_factors(
     repo: Repository,
     client: DARTClient,
@@ -704,7 +718,7 @@ def collect_corporate_events(
     events: List[Dict] = []
     validations: List[Dict] = []
     superseded_source_ids: List[str] = []
-    chain_factor_cache: Dict[Tuple[str, str, str], float] = {}
+    chain_factor_cache: Dict[Tuple[str, str, str, str], float] = {}
 
     for filing in sorted(all_filings, key=lambda x: str(x.get("rcept_no") or "")):
         report_nm = filing.get("report_nm")
@@ -716,7 +730,6 @@ def collect_corporate_events(
         corp_code = str(filing.get("corp_code") or "").strip()
         rcept_dt = str(filing.get("rcept_dt") or "").strip()
         revision_anchor = _normalize_report_name(report_nm)
-        chain_key = (corp_code, event_type, revision_anchor)
 
         if rcept_no and keep_rcept.get(rcept_no) != "KEEP":
             superseded_source_ids.append(rcept_no)
@@ -875,10 +888,29 @@ def collect_corporate_events(
                     }
                 )
 
+        if not legal_effective_date:
+            legal_effective_date = _derive_legal_effective_date(event_type, filing, ds005_row, doc_text)
+        if not effective_date:
+            effective_date = _derive_adjustment_apply_date(
+                event_type,
+                filing,
+                ds005_row,
+                doc_text,
+                legal_effective_date=legal_effective_date,
+            )
+
+        chain_date = effective_date or announce_date
+        chain_key = _revision_chain_key(corp_code, event_type, revision_anchor, chain_date)
+
         if raw_factor is None and status == "NEEDS_REVIEW":
             inherited = chain_factor_cache.get(chain_key)
             if inherited is None:
-                inherited = repo.get_latest_factor_for_chain(corp_code=corp_code, event_type=event_type, revision_anchor=revision_anchor)
+                inherited = repo.get_latest_factor_for_chain(
+                    corp_code=corp_code,
+                    event_type=event_type,
+                    revision_anchor=revision_anchor,
+                    chain_date=chain_date,
+                )
             if inherited is not None and inherited > 0:
                 raw_factor = inherited
                 factor_rule = "inherited_revision_factor"
@@ -893,17 +925,6 @@ def collect_corporate_events(
                         "validated_at": now,
                     }
                 )
-
-        if not legal_effective_date:
-            legal_effective_date = _derive_legal_effective_date(event_type, filing, ds005_row, doc_text)
-        if not effective_date:
-            effective_date = _derive_adjustment_apply_date(
-                event_type,
-                filing,
-                ds005_row,
-                doc_text,
-                legal_effective_date=legal_effective_date,
-            )
         if event_type == "SPLIT" and raw_factor is not None and raw_factor > 0:
             market_effective_date = _infer_market_split_effective_date(
                 repo=repo,
@@ -954,6 +975,7 @@ def collect_corporate_events(
         payload["factor_rule"] = factor_rule
         payload["mapping_source"] = mapping_source
         payload["revision_anchor"] = revision_anchor
+        payload["revision_chain_date"] = chain_date
         payload["ds005_match_type"] = ds005_match_type
         payload["announce_date_rule"] = "rcept_dt" if announce_date else None
         payload["legal_effective_date"] = legal_effective_date
