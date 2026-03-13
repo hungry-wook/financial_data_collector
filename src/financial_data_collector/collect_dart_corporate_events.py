@@ -36,6 +36,7 @@ def _map_event_type(report_nm: str) -> Optional[str]:
         ("감자", "CAPITAL_REDUCTION"),
         ("분할합병", "SPLIT_MERGER"),
         ("합병", "MERGER"),
+        ("주식분할", "SPLIT"),
         ("액면분할", "SPLIT"),
         ("회사분할", "SPLIT"),
         ("주식교환", "STOCK_SWAP"),
@@ -52,6 +53,53 @@ def _normalize_report_name(report_nm: str) -> str:
     text = re.sub(r"^\s*\[[^\]]+\]\s*", "", text)
     text = re.sub(r"\s+", " ", text)
     return text
+
+
+def _normalize_publication_types(pblntf_ty: str) -> List[str]:
+    raw = str(pblntf_ty or "").strip()
+    if not raw:
+        return [""]
+    out: List[str] = []
+    seen = set()
+    for part in raw.split(","):
+        normalized = part.strip().upper()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+    return out or [""]
+
+
+def _iter_collection_windows(bgn_de: date, end_de: date, max_days: int = 7):
+    current = bgn_de
+    step = max(1, int(max_days))
+    while current <= end_de:
+        window_end = min(end_de, current + timedelta(days=step - 1))
+        yield current, window_end
+        current = window_end + timedelta(days=1)
+
+
+def _dedupe_filings_by_receipt(filings: List[Dict]) -> List[Dict]:
+    latest: Dict[str, Dict] = {}
+    ordered: List[Dict] = []
+    for filing in filings:
+        rcept_no = str(filing.get("rcept_no") or "").strip()
+        if not rcept_no:
+            ordered.append(filing)
+            continue
+        latest[rcept_no] = filing
+    seen = set()
+    out: List[Dict] = []
+    for filing in filings:
+        rcept_no = str(filing.get("rcept_no") or "").strip()
+        if not rcept_no:
+            out.append(filing)
+            continue
+        if rcept_no in seen:
+            continue
+        seen.add(rcept_no)
+        out.append(latest[rcept_no])
+    return out
 
 
 def _filing_announce_date(filing: Dict) -> Optional[str]:
@@ -348,21 +396,24 @@ def _recover_factor_from_remote_chain(
 
     bgn_de, end_de = _chain_lookup_window_from_rcept_dt(rcept_dt)
     filings: List[Dict] = []
-    for page_no in range(1, 6):
-        payload = client.list_filings(
-            bgn_de=bgn_de,
-            end_de=end_de,
-            corp_code=corp_code,
-            pblntf_ty='B',
-            page_no=page_no,
-            page_count=100,
-            last_reprt_at='N',
-        )
-        page_filings = payload.get('list', []) or []
-        filings.extend(page_filings)
-        total_count = int(payload.get('total_count') or 0)
-        if page_no * 100 >= total_count or not page_filings:
-            break
+    for publication_type in _normalize_publication_types("B,I"):
+        for page_no in range(1, 6):
+            payload = client.list_filings(
+                bgn_de=bgn_de,
+                end_de=end_de,
+                corp_code=corp_code,
+                pblntf_ty=publication_type,
+                page_no=page_no,
+                page_count=100,
+                last_reprt_at='N',
+            )
+            page_filings = payload.get('list', []) or []
+            filings.extend(page_filings)
+            total_count = int(payload.get('total_count') or 0)
+            if page_no * 100 >= total_count or not page_filings:
+                break
+
+    filings = _dedupe_filings_by_receipt(filings)
 
     candidates = []
     for filing in filings:
@@ -451,12 +502,33 @@ def _resolve_instrument_id(
     return None, "not_found"
 
 
+def _infer_market_split_effective_date(
+    repo: Repository,
+    instrument_id: Optional[str],
+    announce_date: Optional[str],
+    raw_factor: Optional[float],
+) -> Optional[str]:
+    if not instrument_id or not announce_date or raw_factor is None:
+        return None
+    try:
+        start = date.fromisoformat(str(announce_date))
+    except ValueError:
+        return None
+    end = start + timedelta(days=180)
+    return repo.find_split_trade_date(
+        instrument_id=instrument_id,
+        date_from=start.isoformat(),
+        date_to=end.isoformat(),
+        expected_factor=float(raw_factor),
+    )
+
+
 def collect_corporate_events_and_rebuild_factors(
     repo: Repository,
     client: DARTClient,
     bgn_de: date,
     end_de: date,
-    pblntf_ty: str = "B",
+    pblntf_ty: str = "B,I",
     last_reprt_at: str = "Y",
     max_pages: int = 20,
     verify_document: bool = True,
@@ -511,7 +583,7 @@ def run_dart_corporate_event_collection(
     database_url: str,
     bgn_de: date,
     end_de: date,
-    pblntf_ty: str = "B",
+    pblntf_ty: str = "B,I",
     last_reprt_at: str = "Y",
     max_pages: int = 20,
     verify_document: bool = True,
@@ -592,7 +664,7 @@ def collect_corporate_events(
     client: DARTClient,
     bgn_de: date,
     end_de: date,
-    pblntf_ty: str = "B",
+    pblntf_ty: str = "B,I",
     last_reprt_at: str = "Y",
     max_pages: int = 20,
     verify_document: bool = True,
@@ -600,23 +672,26 @@ def collect_corporate_events(
     now = _utc_now_iso()
     all_filings: List[Dict] = []
 
-    for page_no in range(1, max_pages + 1):
-        payload = client.list_filings(
-            bgn_de=bgn_de,
-            end_de=end_de,
-            pblntf_ty=pblntf_ty,
-            page_no=page_no,
-            page_count=100,
-            last_reprt_at=last_reprt_at,
-        )
-        page_filings = payload.get("list", []) or []
-        all_filings.extend(page_filings)
-        total_count = int(payload.get("total_count") or 0)
-        if page_no * 100 >= total_count:
-            break
-        if not page_filings:
-            break
+    for publication_type in _normalize_publication_types(pblntf_ty):
+        for window_start, window_end in _iter_collection_windows(bgn_de, end_de):
+            for page_no in range(1, max_pages + 1):
+                payload = client.list_filings(
+                    bgn_de=window_start,
+                    end_de=window_end,
+                    pblntf_ty=publication_type,
+                    page_no=page_no,
+                    page_count=100,
+                    last_reprt_at=last_reprt_at,
+                )
+                page_filings = payload.get("list", []) or []
+                all_filings.extend(page_filings)
+                total_count = int(payload.get("total_count") or 0)
+                if page_no * 100 >= total_count:
+                    break
+                if not page_filings:
+                    break
 
+    all_filings = _dedupe_filings_by_receipt(all_filings)
     keep_rcept = _pick_latest_revisions(all_filings)
 
     corp_to_stock: Dict[str, str] = {}
@@ -829,6 +904,15 @@ def collect_corporate_events(
                 doc_text,
                 legal_effective_date=legal_effective_date,
             )
+        if event_type == "SPLIT" and raw_factor is not None and raw_factor > 0:
+            market_effective_date = _infer_market_split_effective_date(
+                repo=repo,
+                instrument_id=instrument_id,
+                announce_date=announce_date,
+                raw_factor=raw_factor,
+            )
+            if market_effective_date:
+                effective_date = market_effective_date
 
         payload = dict(filing)
         status, effective_date, activation_issue = _apply_activation_rules(
@@ -875,6 +959,8 @@ def collect_corporate_events(
         payload["legal_effective_date"] = legal_effective_date
         payload["adjustment_apply_date"] = effective_date
         payload["effective_date_rule"] = "adjustment_apply_date" if effective_date else None
+        if event_type == "SPLIT" and raw_factor is not None and raw_factor > 0:
+            payload["market_effective_date"] = effective_date
         if activation_issue:
             payload["activation_issue"] = activation_issue
         if ds005_row:

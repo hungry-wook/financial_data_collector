@@ -152,7 +152,7 @@ def infer_raw_factor(event_type: str, text: str) -> Tuple[Optional[float], str]:
                     return 1.0 / remain, "capital_reduction_section5_percent"
 
     if et in {"SPLIT", "SPLIT_MERGER"}:
-        m = re.search(r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*\uC8FC\s*\uB97C\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*\uC8FC", body)
+        m = re.search(r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*주\s*를\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*주", body)
         if m:
             try:
                 before = float(m.group(1).replace(",", ""))
@@ -163,6 +163,34 @@ def infer_raw_factor(event_type: str, text: str) -> Tuple[Optional[float], str]:
             if before > 0 and after > 0:
                 return before / after, "split_ratio"
 
+        par_value = re.search(
+            r"1\s*주당\s*가액[^0-9]{0,24}([0-9][0-9,]*(?:\.[0-9]+)?)[\s\S]{0,40}?([0-9][0-9,]*(?:\.[0-9]+)?)",
+            body,
+        )
+        if par_value:
+            try:
+                before = float(par_value.group(1).replace(",", ""))
+                after = float(par_value.group(2).replace(",", ""))
+            except ValueError:
+                before = 0.0
+                after = 0.0
+            if before > 0 and after > 0:
+                return after / before, "split_par_value_ratio"
+
+        issued_shares = re.search(
+            r"발행주식총수[\s\S]{0,80}?([0-9][0-9,]{3,})(?:\s|\)|주)+(?:[\s\S]{0,40}?)([0-9][0-9,]{3,})(?:\s|\)|주)",
+            body,
+        )
+        if issued_shares:
+            try:
+                before = float(issued_shares.group(1).replace(",", ""))
+                after = float(issued_shares.group(2).replace(",", ""))
+            except ValueError:
+                before = 0.0
+                after = 0.0
+            if before > 0 and after > 0:
+                return before / after, "split_share_count_ratio"
+
         section4 = _extract_section_text(body, 4, max_len=600)
         if section4:
             nums = _find_all_numbers(r"([0-9][0-9,]*)", section4)
@@ -171,7 +199,7 @@ def infer_raw_factor(event_type: str, text: str) -> Tuple[Optional[float], str]:
                 before, after = pair
                 return before / after, "split_section4_before_after"
 
-        if re.search(r"\uBD84\uD560\uBE44\uC728[\s\S]{0,24}\uC0B0\uC815\uD558\uC9C0\s*\uC54A", body):
+        if re.search(r"분할비율[\s\S]{0,24}산정하지\s*않", body):
             return 1.0, "split_no_direct_ratio"
 
     if et in {"RIGHTS_ISSUE", "RIGHTS_BONUS_ISSUE", "RIGHTS_ISSUE_SHAREHOLDER", "RIGHTS_ISSUE_PUBLIC", "RIGHTS_ISSUE_THIRD_PARTY"}:
@@ -252,50 +280,50 @@ def infer_effective_date(event_type: str, text: str, ds005_row: Optional[Dict] =
     body = str(text or "")
     patterns = {
         "BONUS_ISSUE": [
-            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
             r"상장예정일\s*[:：]?\s*(20\d{2}.{0,12})",
         ],
         "CAPITAL_REDUCTION": [
-            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
             r"효력발생일\s*[:：]?\s*(20\d{2}.{0,12})",
         ],
         "SPLIT": [
-            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
             r"분할기일\s*[:：]?\s*(20\d{2}.{0,12})",
         ],
         "SPLIT_MERGER": [
-            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
             r"분할합병기일\s*[:：]?\s*(20\d{2}.{0,12})",
         ],
         "MERGER": [
             r"합병기일\s*[:：]?\s*(20\d{2}.{0,12})",
-            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
         ],
         "STOCK_SWAP": [
             r"주식교환일\s*[:：]?\s*(20\d{2}.{0,12})",
-            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
         ],
         "STOCK_TRANSFER": [
             r"주식이전일\s*[:：]?\s*(20\d{2}.{0,12})",
-            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
         ],
         "RIGHTS_ISSUE": [
-            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
             r"납입일\s*[:：]?\s*(20\d{2}.{0,12})",
         ],
         "RIGHTS_ISSUE_SHAREHOLDER": [
-            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
             r"구주주\s*청약일\s*[:：]?\s*(20\d{2}.{0,12})",
         ],
         "RIGHTS_ISSUE_PUBLIC": [
-            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
             r"청약일\s*[:：]?\s*(20\d{2}.{0,12})",
         ],
         "RIGHTS_ISSUE_THIRD_PARTY": [
-            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
         ],
         "RIGHTS_BONUS_ISSUE": [
-            r"신주\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
             r"납입일\s*[:：]?\s*(20\d{2}.{0,12})",
         ],
     }

@@ -1,4 +1,4 @@
-﻿import io
+import io
 import zipfile
 
 from financial_data_collector.dart_event_parser import extract_text_from_document_zip, infer_effective_date, infer_event_status, infer_raw_factor, infer_rights_issue_subtype
@@ -75,6 +75,13 @@ def test_infer_raw_factor_rights_issue_section1_3():
     assert rule == "rights_issue_keyword_sections"
 
 
+def test_infer_raw_factor_split_par_value_row_returns_inverse_ratio():
+    text = "주식분할결정 1. 주식분할 내용 구분 분할 전 분할 후 1주당 가액(원) 5,000 100 발행주식총수 보통주식(주) 128,386,494 6,419,324,700"
+    factor, rule = infer_raw_factor("SPLIT", text)
+    assert round(factor, 10) == round(100 / 5000, 10)
+    assert rule == "split_par_value_ratio"
+
+
 def test_infer_raw_factor_split_no_direct_ratio_returns_one():
     text = "물적분할 방식이므로 분할비율을 산정하지 않는다"
     factor, rule = infer_raw_factor("SPLIT", text)
@@ -118,3 +125,9 @@ def test_infer_rights_issue_subtype_third_party_from_ds005():
 def test_infer_effective_date_from_capital_reduction_listing_date():
     value = infer_effective_date("CAPITAL_REDUCTION", "", {"crsc_nstklstprd": "2026-04-30"})
     assert value == "2026-04-30"
+
+
+def test_infer_effective_date_from_split_listing_date_text():
+    text = "주식분할결정 매매거래정지기간 2018-04-25 ~ 신주변경상장일 전일 신주권상장예정일 2018-05-16"
+    value = infer_effective_date("SPLIT", text)
+    assert value == "2018-05-16"

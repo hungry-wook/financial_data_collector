@@ -19,6 +19,7 @@ def test_map_event_type_matches_korean_report_names():
     assert _map_event_type("주요사항보고서(분할합병결정)") == "SPLIT_MERGER"
     assert _map_event_type("주요사항보고서(회사합병결정)") == "MERGER"
     assert _map_event_type("주요사항보고서(액면분할결정)") == "SPLIT"
+    assert _map_event_type("주식분할결정") == "SPLIT"
     assert _map_event_type("주요사항보고서(회사분할결정)") == "SPLIT"
     assert _map_event_type("주요사항보고서(주식교환결정)") == "STOCK_SWAP"
     assert _map_event_type("주요사항보고서(주식이전결정)") == "STOCK_TRANSFER"
@@ -352,6 +353,41 @@ class _FakeRightsBonusClient(_FakeClient):
         return buf.getvalue()
 
 
+class _FakeStockSplitCategoryClient(_FakeClient):
+    def list_filings(self, **kwargs):
+        self.calls.append(("list", kwargs))
+        if kwargs.get("pblntf_ty") == "I":
+            return {
+                "status": "000",
+                "total_count": 1,
+                "list": [
+                    {
+                        "corp_code": "x",
+                        "corp_name": KORP,
+                        "stock_code": "123456",
+                        "corp_cls": "K",
+                        "report_nm": "주식분할결정",
+                        "rcept_no": "20180131800068",
+                        "rcept_dt": "20180131",
+                    }
+                ],
+            }
+        return {"status": "000", "total_count": 0, "list": []}
+
+    def get_document_zip(self, rcept_no):
+        self.calls.append(("doc", {"rcept_no": rcept_no}))
+        import io
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(
+                "a.html",
+                "<html><body>주식분할결정 1. 주식분할 내용 구분 분할 전 분할 후 1주당 가액(원) 5,000 100 발행주식총수 보통주식(주) 128,386,494 6,419,324,700 매매거래정지예정기간 시작일 2018-04-27 종료일 2018-05-03 신주상장예정일 2018-05-04</body></html>",
+            )
+        return buf.getvalue()
+
+
 def _seed_instrument(repo):
     InstrumentCollector(repo).collect(
         [
@@ -365,6 +401,158 @@ def _seed_instrument(repo):
         ],
         "krx",
     )
+
+
+
+
+def _seed_split_market_history(repo):
+    instrument_id = repo.get_instrument_id_by_external_code("123456", market_code="KOSDAQ")
+    assert instrument_id is not None
+    repo.upsert_daily_market(
+        [
+            {
+                "instrument_id": instrument_id,
+                "trade_date": "2018-05-03",
+                "open": 2650000,
+                "high": 2650000,
+                "low": 2650000,
+                "close": 2650000,
+                "volume": 1000,
+                "turnover_value": 2650000000,
+                "market_value": 340223208100000,
+                "listed_shares": 128386494,
+                "source_name": "krx",
+                "collected_at": "2026-03-13T00:00:00Z",
+            },
+            {
+                "instrument_id": instrument_id,
+                "trade_date": "2018-05-04",
+                "open": 53000,
+                "high": 53000,
+                "low": 51900,
+                "close": 51900,
+                "volume": 1000000,
+                "turnover_value": 51900000000,
+                "market_value": 333163951930000,
+                "listed_shares": 6419324700,
+                "source_name": "krx",
+                "collected_at": "2026-03-13T00:00:00Z",
+            },
+        ]
+    )
+
+
+def test_collect_corporate_events_collects_stock_split_from_category_i(repo):
+    _seed_instrument(repo)
+    _seed_split_market_history(repo)
+
+    out = collect_corporate_events(
+        repo=repo,
+        client=_FakeStockSplitCategoryClient(),
+        bgn_de=date(2018, 1, 31),
+        end_de=date(2018, 1, 31),
+        pblntf_ty="B,I",
+        verify_document=True,
+    )
+
+    assert out["events_upserted"] == 1
+    assert out["active_events"] == 1
+
+    rows = repo.query(
+        "SELECT event_type, status, raw_factor, effective_date FROM corporate_events WHERE source_event_id = %s",
+        ("20180131800068",),
+    )
+    assert rows[0]["event_type"] == "SPLIT"
+    assert rows[0]["status"] == "ACTIVE"
+    assert float(rows[0]["raw_factor"]) == 0.02
+    assert rows[0]["effective_date"] == "2018-05-04"
+
+
+
+
+class _FakeStockSplitRevisionClient(_FakeClient):
+    def list_filings(self, **kwargs):
+        self.calls.append(("list", kwargs))
+        corp_code = kwargs.get("corp_code")
+        if corp_code == "x":
+            return {
+                "status": "000",
+                "total_count": 2,
+                "list": [
+                    {
+                        "corp_code": "x",
+                        "corp_name": KORP,
+                        "stock_code": "123456",
+                        "corp_cls": "K",
+                        "report_nm": "주식분할결정",
+                        "rcept_no": "20180131800068",
+                        "rcept_dt": "20180131",
+                    },
+                    {
+                        "corp_code": "x",
+                        "corp_name": KORP,
+                        "stock_code": "123456",
+                        "corp_cls": "K",
+                        "report_nm": "[기재정정]주식분할결정",
+                        "rcept_no": "20180316800856",
+                        "rcept_dt": "20180316",
+                    },
+                ],
+            }
+        return {
+            "status": "000",
+            "total_count": 1,
+            "list": [
+                {
+                    "corp_code": "x",
+                    "corp_name": KORP,
+                    "stock_code": "123456",
+                    "corp_cls": "K",
+                    "report_nm": "[기재정정]주식분할결정",
+                    "rcept_no": "20180316800856",
+                    "rcept_dt": "20180316",
+                }
+            ],
+        }
+
+    def get_document_zip(self, rcept_no):
+        self.calls.append(("doc", {"rcept_no": rcept_no}))
+        if rcept_no == "20180316800856":
+            raise RuntimeError("OpenDART document error status=014: 파일이 존재하지 않습니다.")
+        import io
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(
+                "a.html",
+                "<html><body>주식분할결정 1. 주식분할 내용 구분 분할 전 분할 후 1주당 가액(원) 5,000 100 발행주식총수 보통주식(주) 128,386,494 6,419,324,700 주주총회예정일 2018-03-23 신주권상장예정일 2018-05-16</body></html>",
+            )
+        return buf.getvalue()
+
+
+def test_collect_corporate_events_prefers_market_split_trade_date_for_revision_chain(repo):
+    _seed_instrument(repo)
+    _seed_split_market_history(repo)
+
+    out = collect_corporate_events(
+        repo=repo,
+        client=_FakeStockSplitRevisionClient(),
+        bgn_de=date(2018, 3, 16),
+        end_de=date(2018, 3, 16),
+        pblntf_ty="B,I",
+        verify_document=True,
+    )
+
+    assert out["events_upserted"] == 1
+    rows = repo.query(
+        "SELECT status, raw_factor, effective_date, payload->>'market_effective_date' AS market_effective_date FROM corporate_events WHERE source_event_id = %s",
+        ("20180316800856",),
+    )
+    assert rows[0]["status"] == "ACTIVE"
+    assert float(rows[0]["raw_factor"]) == 0.02
+    assert rows[0]["effective_date"] == "2018-05-04"
+    assert rows[0]["market_effective_date"] == "2018-05-04"
 
 
 def test_collect_corporate_events_sets_active_when_factor_parsed(repo):

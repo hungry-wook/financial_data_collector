@@ -1078,6 +1078,50 @@ class Repository:
         )
 
 
+    def find_split_trade_date(
+        self,
+        instrument_id: str,
+        date_from: str,
+        date_to: str,
+        expected_factor: float,
+        tolerance: float = 0.002,
+    ) -> Optional[str]:
+        if not instrument_id or expected_factor is None:
+            return None
+        try:
+            factor = float(expected_factor)
+        except (TypeError, ValueError):
+            return None
+        if factor <= 0:
+            return None
+
+        rows = self.query(
+            '''
+            SELECT trade_date, close, listed_shares, market_value
+            FROM daily_market_data
+            WHERE instrument_id = %s
+              AND trade_date BETWEEN %s AND %s
+            ORDER BY trade_date
+            ''',
+            (instrument_id, date_from, date_to),
+        )
+        if len(rows) < 2:
+            return None
+
+        previous = None
+        for row in rows:
+            if previous is None:
+                previous = row
+                continue
+            prev_shares = previous.get('listed_shares')
+            curr_shares = row.get('listed_shares')
+            if prev_shares and curr_shares and prev_shares > 0 and curr_shares > 0:
+                observed = float(prev_shares) / float(curr_shares)
+                if abs(observed - factor) <= tolerance:
+                    return row.get('trade_date')
+            previous = row
+        return None
+
     def get_latest_trade_date(self) -> Optional[str]:
         rows = self.query(
             """
