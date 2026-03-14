@@ -286,6 +286,8 @@ def infer_effective_date(event_type: str, text: str, ds005_row: Optional[Dict] =
         "CAPITAL_REDUCTION": [
             r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
             r"효력발생일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"해제일시\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"변경상장일\s*[:：]?\s*(20\d{2}.{0,12})",
         ],
         "SPLIT": [
             r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",

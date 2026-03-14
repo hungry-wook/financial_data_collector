@@ -131,3 +131,9 @@ def test_infer_effective_date_from_split_listing_date_text():
     text = "주식분할결정 매매거래정지기간 2018-04-25 ~ 신주변경상장일 전일 신주권상장예정일 2018-05-16"
     value = infer_effective_date("SPLIT", text)
     assert value == "2018-05-16"
+
+
+def test_infer_effective_date_from_capital_reduction_trading_resumption_notice():
+    text = "주권매매거래정지해제 1.대상종목 (주)DM테크놀로지 보통주 2.해제사유 감자 주권 변경상장 3.해제일시 2010-02-09"
+    value = infer_effective_date("CAPITAL_REDUCTION", text)
+    assert value == "2010-02-09"
