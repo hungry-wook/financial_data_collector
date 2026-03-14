@@ -23,6 +23,7 @@ class DARTClientConfig:
     daily_limit: int = 10000
     base_url: str = "https://opendart.fss.or.kr/api"
     cache_dir: Optional[str] = None
+    offline_only: bool = False
 
     @classmethod
     def from_settings(cls, s: OpenDARTSettings) -> "DARTClientConfig":
@@ -95,6 +96,8 @@ class DARTClient:
         cached = self._read_cached_json(endpoint, params)
         if cached is not None:
             return cached
+        if self.config.offline_only:
+            raise DARTClientError(f"OpenDART cache miss for {endpoint}")
 
         self._check_limit()
         query = {"crtfc_key": self.config.api_key, **params}
@@ -182,6 +185,8 @@ class DARTClient:
         cached = self._read_cached_document(rcept_no)
         if cached is not None:
             return cached
+        if self.config.offline_only:
+            raise DARTClientError(f"OpenDART document cache miss for {rcept_no}")
 
         self._check_limit()
         url = f"{self.config.base_url.rstrip('/')}/document.xml"
@@ -213,6 +218,8 @@ class DARTClient:
         cache_path = self._corp_codes_cache_path()
         if cache_path is not None and cache_path.exists():
             return json.loads(cache_path.read_text(encoding="utf-8"))
+        if self.config.offline_only:
+            raise DARTClientError("OpenDART corp codes cache miss")
 
         self._check_limit()
         url = f"{self.config.base_url.rstrip('/')}/corpCode.xml"

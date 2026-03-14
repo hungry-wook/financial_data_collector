@@ -140,3 +140,24 @@ def test_document_zip_uses_cached_body_when_available(tmp_path):
     body = second.get_document_zip("20260101000001")
     assert body == b"PK\x03\x04cached-zip"
     assert second_session.calls == []
+
+
+
+def test_list_filings_offline_only_raises_on_cache_miss(tmp_path):
+    session = _FakeSession([_FakeResponse(payload={"status": "000", "list": []})])
+    client = DARTClient(DARTClientConfig(api_key="k", cache_dir=str(tmp_path), offline_only=True), session=session)
+
+    with pytest.raises(DARTClientError, match="cache miss"):
+        client.list_filings(bgn_de=date(2026, 1, 1), end_de=date(2026, 1, 1))
+
+    assert session.calls == []
+
+
+def test_document_zip_offline_only_raises_on_cache_miss(tmp_path):
+    session = _FakeSession([_FakeResponse(content=b"PK\x03\x04zip-data")])
+    client = DARTClient(DARTClientConfig(api_key="k", cache_dir=str(tmp_path), offline_only=True), session=session)
+
+    with pytest.raises(DARTClientError, match="cache miss"):
+        client.get_document_zip("20260101000001")
+
+    assert session.calls == []

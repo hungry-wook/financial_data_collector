@@ -607,6 +607,7 @@ def run_dart_corporate_event_collection(
     run_id: Optional[str] = None,
     client: Optional[DARTClient] = None,
     schema: Optional[str] = None,
+    cache_only: bool = False,
 ) -> Dict[str, object]:
     repo = Repository(database_url, schema=schema)
     repo.init_schema()
@@ -615,7 +616,9 @@ def run_dart_corporate_event_collection(
         load_dotenv(".env")
         settings = OpenDARTSettings.from_env()
         settings.validate()
-        dart_client = DARTClient(DARTClientConfig.from_settings(settings))
+        config = DARTClientConfig.from_settings(settings)
+        config.offline_only = cache_only
+        dart_client = DARTClient(config)
 
     run_manager = RunManager(repo)
     effective_run_id = run_id or run_manager.start(
@@ -1053,6 +1056,7 @@ def main() -> None:
     parser.add_argument("--overlap-days", type=int, default=7)
     parser.add_argument("--as-of-timestamp")
     parser.add_argument("--run-id")
+    parser.add_argument("--cache-only", action="store_true")
     args = parser.parse_args()
 
     if not args.database_url:
@@ -1073,6 +1077,7 @@ def main() -> None:
         overlap_days=args.overlap_days,
         as_of_timestamp=args.as_of_timestamp,
         run_id=args.run_id,
+        cache_only=args.cache_only,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
