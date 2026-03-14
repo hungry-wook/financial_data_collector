@@ -1033,3 +1033,73 @@ def test_revision_chain_does_not_collapse_distinct_events_with_same_report_name(
         ("00107066", "CAPITAL_REDUCTION"),
     )
     assert [r["source_event_id"] for r in rows] == ["20130205000141", "20160118000360"]
+
+
+
+def test_collect_corporate_events_does_not_inherit_factor_for_market_notice_capital_reduction(repo):
+    _seed_instrument(repo)
+    repo.upsert_corporate_events(
+        [
+            {
+                "event_id": "prior-capred",
+                "event_version": 1,
+                "instrument_id": repo.get_instrument_id_by_external_code("123456", market_code="KOSDAQ"),
+                "event_type": "CAPITAL_REDUCTION",
+                "announce_date": "2026-01-01",
+                "effective_date": "2026-01-10",
+                "source_event_id": "prior-capred-src",
+                "source_name": "opendart",
+                "collected_at": "2026-03-14T00:00:00Z",
+                "raw_factor": 6.0,
+                "confidence": "MEDIUM",
+                "status": "ACTIVE",
+                "payload": {"corp_code": "x", "revision_anchor": "주권매매거래정지해제(감자 주권 변경상장)"},
+            }
+        ]
+    )
+
+    class _MarketNoticeClient(_FakeClient):
+        def list_filings(self, **kwargs):
+            self.calls.append(("list", kwargs))
+            return {
+                "status": "000",
+                "total_count": 1,
+                "list": [
+                    {
+                        "corp_code": "x",
+                        "corp_name": KORP,
+                        "stock_code": "123456",
+                        "corp_cls": "K",
+                        "report_nm": "주권매매거래정지해제(감자 주권 변경상장)",
+                        "rcept_no": "20260314000001",
+                        "rcept_dt": "20260314",
+                    }
+                ],
+            }
+
+        def get_document_zip(self, rcept_no):
+            self.calls.append(("doc", {"rcept_no": rcept_no}))
+            import io
+            import zipfile
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("a.html", "<html><body>주권매매거래정지해제 1.대상종목 샘플 보통주 2.해제사유 감자 주권 변경상장 3.해제일시 2026-03-14</body></html>")
+            return buf.getvalue()
+
+    out = collect_corporate_events(
+        repo=repo,
+        client=_MarketNoticeClient(),
+        bgn_de=date(2026, 3, 14),
+        end_de=date(2026, 3, 14),
+        pblntf_ty="B,I,J",
+        verify_document=True,
+    )
+
+    rows = repo.query(
+        "SELECT status, raw_factor, effective_date FROM corporate_events WHERE source_event_id = %s",
+        ("20260314000001",),
+    )
+    assert out["needs_review_events"] == 1
+    assert rows[0]["status"] == "NEEDS_REVIEW"
+    assert rows[0]["raw_factor"] is None
+    assert rows[0]["effective_date"] == "2026-03-14"

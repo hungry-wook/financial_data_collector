@@ -121,6 +121,11 @@ def infer_raw_factor(event_type: str, text: str) -> Tuple[Optional[float], str]:
             return 1.0 / (1.0 + x), "bonus_issue_1_share_allocation"
 
     if et == "CAPITAL_REDUCTION":
+        if ("주권매매거래정지" in body or "주권매매거래정지해제" in body) and (
+            "감자 주권 변경상장" in body or "구주권 제출" in body
+        ):
+            return None, "capital_reduction_market_notice_no_factor"
+
         m = re.search(
             r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*\uC8FC\s*\uB97C\s*[^0-9]{0,24}([0-9][0-9,]*(?:\.[0-9]+)?)\s*\uC8FC\s*\uB85C\s*\uBCD1\uD569",
             body,

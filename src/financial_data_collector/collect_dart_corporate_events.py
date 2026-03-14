@@ -769,6 +769,7 @@ def collect_corporate_events(
         factor_rule = "not_verified"
         status = "NEEDS_REVIEW"
         confidence = "LOW"
+        skip_revision_inherit = False
 
         ds005_row, ds005_match_type = _extract_ds005_row(
             client=client,
@@ -815,6 +816,7 @@ def collect_corporate_events(
                 doc_text = extract_text_from_document_zip(doc_zip)
                 event_type = _derive_event_type(event_type, ds005_row, doc_text)
                 raw_factor, factor_rule = infer_raw_factor(event_type, doc_text)
+                skip_revision_inherit = factor_rule == "capital_reduction_market_notice_no_factor"
                 if raw_factor and raw_factor > 0:
                     status = "ACTIVE"
                     confidence = "MEDIUM"
@@ -902,7 +904,7 @@ def collect_corporate_events(
         chain_date = effective_date or announce_date
         chain_key = _revision_chain_key(corp_code, event_type, revision_anchor, chain_date)
 
-        if raw_factor is None and status == "NEEDS_REVIEW":
+        if raw_factor is None and status == "NEEDS_REVIEW" and not skip_revision_inherit:
             inherited = chain_factor_cache.get(chain_key)
             if inherited is None:
                 inherited = repo.get_latest_factor_for_chain(

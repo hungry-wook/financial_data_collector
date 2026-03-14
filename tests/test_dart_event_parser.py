@@ -137,3 +137,10 @@ def test_infer_effective_date_from_capital_reduction_trading_resumption_notice()
     text = "주권매매거래정지해제 1.대상종목 (주)DM테크놀로지 보통주 2.해제사유 감자 주권 변경상장 3.해제일시 2010-02-09"
     value = infer_effective_date("CAPITAL_REDUCTION", text)
     assert value == "2010-02-09"
+
+
+def test_infer_raw_factor_skips_capital_reduction_market_notice():
+    text = "주권매매거래정지해제 1.대상종목 (주)DM테크놀로지 보통주 2.해제사유 감자 주권 변경상장 3.해제일시 2010-02-09"
+    factor, rule = infer_raw_factor("CAPITAL_REDUCTION", text)
+    assert factor is None
+    assert rule == "capital_reduction_market_notice_no_factor"
