@@ -109,3 +109,34 @@ def test_http_error_is_wrapped():
 
     with pytest.raises(DARTClientError):
         client.list_filings(bgn_de=date(2026, 1, 1), end_de=date(2026, 1, 1))
+
+
+
+def test_list_filings_uses_cached_payload_when_available(tmp_path):
+    first = DARTClient(
+        DARTClientConfig(api_key="k", cache_dir=str(tmp_path)),
+        session=_FakeSession([_FakeResponse(payload={"status": "013", "message": "no data", "list": []})]),
+    )
+    payload = first.list_filings(bgn_de=date(2026, 1, 1), end_de=date(2026, 1, 1), pblntf_ty="B")
+    assert payload["status"] == "013"
+
+    second_session = _FakeSession([])
+    second = DARTClient(DARTClientConfig(api_key="k", cache_dir=str(tmp_path)), session=second_session)
+    cached = second.list_filings(bgn_de=date(2026, 1, 1), end_de=date(2026, 1, 1), pblntf_ty="B")
+    assert cached["status"] == "013"
+    assert second_session.calls == []
+
+
+def test_document_zip_uses_cached_body_when_available(tmp_path):
+    cache_root = tmp_path / "docs"
+    first = DARTClient(
+        DARTClientConfig(api_key="k", cache_dir=str(cache_root)),
+        session=_FakeSession([_FakeResponse(content=b"PK\x03\x04cached-zip")]),
+    )
+    first.get_document_zip("20260101000001")
+
+    second_session = _FakeSession([])
+    second = DARTClient(DARTClientConfig(api_key="k", cache_dir=str(cache_root)), session=second_session)
+    body = second.get_document_zip("20260101000001")
+    assert body == b"PK\x03\x04cached-zip"
+    assert second_session.calls == []

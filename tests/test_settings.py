@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from financial_data_collector.settings import KRXSettings, load_dotenv
+from financial_data_collector.settings import KRXSettings, OpenDARTSettings, load_dotenv
 
 
 def test_load_dotenv(tmp_path):
@@ -40,3 +40,14 @@ def test_from_env_requires_krx_auth_key(monkeypatch):
     assert s.auth_key == ""
     with pytest.raises(ValueError, match="KRX_AUTH_KEY"):
         s.validate()
+
+
+
+def test_opendart_settings_default_cache_dir(monkeypatch):
+    monkeypatch.setenv("OPEN_DART_API_KEY", "k")
+    monkeypatch.setenv("OPEN_DART_DAILY_LIMIT", "100")
+    monkeypatch.delenv("OPEN_DART_CACHE_DIR", raising=False)
+
+    s = OpenDARTSettings.from_env()
+
+    assert s.cache_dir == "data/opendart_raw_cache"

@@ -49,12 +49,14 @@ class KRXSettings:
 class OpenDARTSettings:
     api_key: str
     daily_limit: int
+    cache_dir: str
 
     @classmethod
     def from_env(cls) -> "OpenDARTSettings":
         return cls(
             api_key=os.getenv("OPEN_DART_API_KEY", "").strip(),
             daily_limit=int(os.getenv("OPEN_DART_DAILY_LIMIT", "10000")),
+            cache_dir=os.getenv("OPEN_DART_CACHE_DIR", "data/opendart_raw_cache").strip(),
         )
 
     def validate(self) -> None:
@@ -63,5 +65,7 @@ class OpenDARTSettings:
             missing.append("OPEN_DART_API_KEY")
         if self.daily_limit <= 0:
             missing.append("OPEN_DART_DAILY_LIMIT(>0)")
+        if not self.cache_dir:
+            missing.append("OPEN_DART_CACHE_DIR")
         if missing:
             raise ValueError("Missing/invalid env: " + ", ".join(missing))
