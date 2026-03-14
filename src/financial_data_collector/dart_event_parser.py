@@ -105,7 +105,7 @@ def infer_event_status(event_type: str, text: str) -> Optional[Tuple[str, str]]:
     if et not in {"BONUS_ISSUE", "RIGHTS_ISSUE", "RIGHTS_BONUS_ISSUE", "CAPITAL_REDUCTION", "RIGHTS_ISSUE_SHAREHOLDER", "RIGHTS_ISSUE_PUBLIC", "RIGHTS_ISSUE_THIRD_PARTY"}:
         return None
 
-    if re.search(r"(철회|취소)", body) and re.search(r"(유상증자|무상증자|유무상증자|감자)", body):
+    if re.search(r"(\uCCA0\uD68C|\uCDE8\uC18C)", body) and re.search(r"(\uC720\uC0C1\uC99D\uC790|\uBB34\uC0C1\uC99D\uC790|\uAC10\uC790)", body):
         return "REJECTED", "event_withdrawn_or_cancelled"
 
     return None
@@ -121,13 +121,13 @@ def infer_raw_factor(event_type: str, text: str) -> Tuple[Optional[float], str]:
             return 1.0 / (1.0 + x), "bonus_issue_1_share_allocation"
 
     if et == "CAPITAL_REDUCTION":
-        if ("주권매매거래정지" in body or "주권매매거래정지해제" in body) and (
-            "감자 주권 변경상장" in body or "구주권 제출" in body
+        if ("\uC8FC\uAD8C\uB9E4\uB9E4\uAC70\uB798\uC815\uC9C0" in body or "\uC8FC\uAD8C\uB9E4\uB9E4\uAC70\uB798\uC815\uC9C0\uD574\uC81C" in body) and (
+            "\uAC10\uC790 \uC8FC\uAD8C \uBCC0\uACBD\uC0C1\uC7A5" in body or "\uAD6C\uC8FC\uAD8C \uC81C\uCD9C" in body
         ):
             return None, "capital_reduction_market_notice_no_factor"
 
         m = re.search(
-            r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*\uC8FC\s*\uB97C\s*[^0-9]{0,24}([0-9][0-9,]*(?:\.[0-9]+)?)\s*\uC8FC\s*\uB85C\s*\uBCD1\uD569",
+            r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*\uC8FC[\s\S]{0,48}?([0-9][0-9,]*(?:\.[0-9]+)?)\s*\uC8FC\s*\uB85C\s*\uBCD1\uD569",
             body,
         )
         if m:
@@ -140,14 +140,29 @@ def infer_raw_factor(event_type: str, text: str) -> Tuple[Optional[float], str]:
             if before > 0 and after > 0:
                 return before / after, "capital_reduction_ratio"
 
+        section7 = _extract_section_text(body, 7, max_len=320)
+        if section7:
+            m = re.search(
+                r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*\uC8FC[\s\S]{0,48}?([0-9][0-9,]*(?:\.[0-9]+)?)\s*\uC8FC\s*\uB85C\s*\uBCD1\uD569",
+                section7,
+            )
+            if m:
+                try:
+                    before = float(m.group(1).replace(",", ""))
+                    after = float(m.group(2).replace(",", ""))
+                except ValueError:
+                    before = 0.0
+                    after = 0.0
+                if before > 0 and after > 0:
+                    return before / after, "capital_reduction_method_ratio"
+
         section4 = _extract_section_text(body, 4, max_len=600)
-        if section4:
+        if section4 and ("\uBC1C\uD589\uC8FC\uC2DD\uC218" in section4 or "\uC8FC\uC2DD\uC218" in section4):
             nums = _find_all_numbers(r"([0-9][0-9,]*)", section4)
             pair = _pick_ratio_pair(nums, prefer_before_ge_after=True)
             if pair:
                 before, after = pair
                 return before / after, "capital_reduction_section4_before_after"
-
         section5 = _extract_section_text(body, 5, max_len=220)
         if section5:
             percent = _find_first_number(r"([0-9]+(?:\.[0-9]+)?)\s*%", section5)
@@ -157,7 +172,7 @@ def infer_raw_factor(event_type: str, text: str) -> Tuple[Optional[float], str]:
                     return 1.0 / remain, "capital_reduction_section5_percent"
 
     if et in {"SPLIT", "SPLIT_MERGER"}:
-        m = re.search(r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*주\s*를\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*주", body)
+        m = re.search(r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*\uC8FC\s*\uB97C\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*\uC8FC", body)
         if m:
             try:
                 before = float(m.group(1).replace(",", ""))
@@ -169,7 +184,7 @@ def infer_raw_factor(event_type: str, text: str) -> Tuple[Optional[float], str]:
                 return before / after, "split_ratio"
 
         par_value = re.search(
-            r"1\s*주당\s*가액[^0-9]{0,24}([0-9][0-9,]*(?:\.[0-9]+)?)[\s\S]{0,40}?([0-9][0-9,]*(?:\.[0-9]+)?)",
+            r"1\s*\uC8FC\uB2F9\s*\uAC00\uC561[^0-9]{0,24}([0-9][0-9,]*(?:\.[0-9]+)?)[\s\S]{0,40}?([0-9][0-9,]*(?:\.[0-9]+)?)",
             body,
         )
         if par_value:
@@ -183,7 +198,7 @@ def infer_raw_factor(event_type: str, text: str) -> Tuple[Optional[float], str]:
                 return after / before, "split_par_value_ratio"
 
         issued_shares = re.search(
-            r"발행주식총수[\s\S]{0,80}?([0-9][0-9,]{3,})(?:\s|\)|주)+(?:[\s\S]{0,40}?)([0-9][0-9,]{3,})(?:\s|\)|주)",
+            r"\uBC1C\uD589\uC8FC\uC2DD\uCD1D\uC218[\s\S]{0,80}?([0-9][0-9,]{3,})(?:\s|\)|\uC8FC)+(?:[\s\S]{0,40}?)([0-9][0-9,]{3,})(?:\s|\)|\uC8FC)",
             body,
         )
         if issued_shares:
@@ -204,7 +219,7 @@ def infer_raw_factor(event_type: str, text: str) -> Tuple[Optional[float], str]:
                 before, after = pair
                 return before / after, "split_section4_before_after"
 
-        if re.search(r"분할비율[\s\S]{0,24}산정하지\s*않", body):
+        if re.search(r"\uBD84\uD560\uBE44\uC728[\s\S]{0,24}?(?:\uACB0\uC815|\uC0B0\uC815)\uD558\uC9C0\s*\uC54A", body):
             return 1.0, "split_no_direct_ratio"
 
     if et in {"RIGHTS_ISSUE", "RIGHTS_BONUS_ISSUE", "RIGHTS_ISSUE_SHAREHOLDER", "RIGHTS_ISSUE_PUBLIC", "RIGHTS_ISSUE_THIRD_PARTY"}:
@@ -231,7 +246,7 @@ def infer_raw_factor(event_type: str, text: str) -> Tuple[Optional[float], str]:
                     return old_v / (old_v + new_v), "rights_issue_section1_3"
 
     if et in {"MERGER", "STOCK_SWAP", "STOCK_TRANSFER"}:
-        if re.search(r"1(?:\.0+)?\s*[:：]\s*0(?:\.0+)?", body):
+        if re.search(r"1(?:\.0+)?\s*[:\uFF1A]\s*0(?:\.0+)?", body):
             return 1.0, "structural_no_new_share_ratio"
         if re.search(r"\uD569\uBCD1\uC2E0\uC8FC[\s\S]{0,24}\uBC1C\uD589[\s\S]{0,12}\uC54A", body):
             return 1.0, "structural_no_new_share_text"
@@ -254,17 +269,32 @@ def _coerce_iso_date(text: str) -> Optional[str]:
 def infer_rights_issue_subtype(ds005_row: Optional[Dict] = None, text: str = "") -> Optional[str]:
     row = ds005_row or {}
     body = f"{row.get('ic_mthn') or ''} {text or ''}"
-    if re.search(r"제\s*3\s*자\s*배정", body):
+    if re.search(r"\uC81C\s*3\s*\uC790\s*\uBC30\uC815", body):
         return "RIGHTS_ISSUE_THIRD_PARTY"
-    if re.search(r"일반\s*공모", body):
+    if re.search(r"\uC77C\uBC18\s*\uACF5\uBAA8", body):
         return "RIGHTS_ISSUE_PUBLIC"
-    if re.search(r"주주\s*배정|구주주", body):
+    if re.search(r"\uAD6C\uC8FC\s*\uBC30\uC815|\uC8FC\uC8FC\s*\uBC30\uC815", body):
         return "RIGHTS_ISSUE_SHAREHOLDER"
     return None
 
 
+
+
 def infer_effective_date(event_type: str, text: str, ds005_row: Optional[Dict] = None) -> Optional[str]:
     row = ds005_row or {}
+    body = str(text or "")
+    direct_keywords = [
+        r"\uD6A8\uB825\uBC1C\uC0DD\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
+        r"\uD6A8\uB825\s*\uBC1C\uC0DD\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
+    ]
+    for pattern in direct_keywords:
+        m = re.search(pattern, body)
+        if not m:
+            continue
+        resolved = _coerce_iso_date(m.group(1))
+        if resolved:
+            return resolved
+
     keyed_values = [
         row.get('crsc_nstklstprd'),
         row.get('nstk_lstg_dt'),
@@ -282,56 +312,56 @@ def infer_effective_date(event_type: str, text: str, ds005_row: Optional[Dict] =
         if resolved:
             return resolved
 
-    body = str(text or "")
     patterns = {
         "BONUS_ISSUE": [
-            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
-            r"상장예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"\uC2E0\uC8FC\uAD8C\uC0C1\uC7A5\uC608\uC815\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
+            r"\uC2E0\uC8FC\uC0C1\uC7A5\uC608\uC815\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
         ],
         "CAPITAL_REDUCTION": [
-            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
-            r"효력발생일\s*[:：]?\s*(20\d{2}.{0,12})",
-            r"해제일시\s*[:：]?\s*(20\d{2}.{0,12})",
-            r"변경상장일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"\uC2E0\uC8FC\uAD8C\uC0C1\uC7A5\uC608\uC815\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
+            r"\uC2E0\uC8FC\uC0C1\uC7A5\uC608\uC815\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
+            r"\uBCC0\uACBD\uC0C1\uC7A5\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
+            r"\uD574\uC81C\uC77C\uC2DC\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
         ],
         "SPLIT": [
-            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
-            r"분할기일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"\uC2E0\uC8FC\uAD8C\uC0C1\uC7A5\uC608\uC815\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
+            r"\uC2E0\uC8FC\uBCC0\uACBD\uC0C1\uC7A5\uC608\uC815\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
+            r"\uBCC0\uACBD\uC0C1\uC7A5\uC608\uC815\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
         ],
         "SPLIT_MERGER": [
-            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
-            r"분할합병기일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"\uC2E0\uC8FC\uAD8C\uC0C1\uC7A5\uC608\uC815\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
+            r"\uC2E0\uC8FC\uBCC0\uACBD\uC0C1\uC7A5\uC608\uC815\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
         ],
         "MERGER": [
-            r"합병기일\s*[:：]?\s*(20\d{2}.{0,12})",
-            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"\uD569\uBCD1\uAE30\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
+            r"\uC2E0\uC8FC\uAD8C\uC0C1\uC7A5\uC608\uC815\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
         ],
         "STOCK_SWAP": [
-            r"주식교환일\s*[:：]?\s*(20\d{2}.{0,12})",
-            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"\uC8FC\uC2DD\uAD50\uD658\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
+            r"\uC2E0\uC8FC\uAD8C\uC0C1\uC7A5\uC608\uC815\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
         ],
         "STOCK_TRANSFER": [
-            r"주식이전일\s*[:：]?\s*(20\d{2}.{0,12})",
-            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"\uC8FC\uC2DD\uC774\uC804\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
+            r"\uC2E0\uC8FC\uAD8C\uC0C1\uC7A5\uC608\uC815\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
         ],
         "RIGHTS_ISSUE": [
-            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
-            r"납입일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"\uC2E0\uC8FC\uC0C1\uC7A5\uC608\uC815\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
+            r"\uB0A9\uC785\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
         ],
         "RIGHTS_ISSUE_SHAREHOLDER": [
-            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
-            r"구주주\s*청약일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"\uC2E0\uC8FC\uC0C1\uC7A5\uC608\uC815\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
+            r"\uAD6C\uC8FC\uC8FC\uCCAD\uC57D\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
         ],
         "RIGHTS_ISSUE_PUBLIC": [
-            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
-            r"청약일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"\uC2E0\uC8FC\uC0C1\uC7A5\uC608\uC815\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
+            r"\uCCAD\uC57D\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
         ],
         "RIGHTS_ISSUE_THIRD_PARTY": [
-            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"\uC2E0\uC8FC\uC0C1\uC7A5\uC608\uC815\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
         ],
         "RIGHTS_BONUS_ISSUE": [
-            r"신주(?:권)?\s*상장\s*예정일\s*[:：]?\s*(20\d{2}.{0,12})",
-            r"납입일\s*[:：]?\s*(20\d{2}.{0,12})",
+            r"\uC2E0\uC8FC\uC0C1\uC7A5\uC608\uC815\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
+            r"\uB0A9\uC785\uC77C\s*[:\uFF1A]?\s*(20\d{2}.{0,12})",
         ],
     }
     for pattern in patterns.get(str(event_type or "").strip().upper(), []):

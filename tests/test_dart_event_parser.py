@@ -144,3 +144,14 @@ def test_infer_raw_factor_skips_capital_reduction_market_notice():
     factor, rule = infer_raw_factor("CAPITAL_REDUCTION", text)
     assert factor is None
     assert rule == "capital_reduction_market_notice_no_factor"
+
+
+def test_infer_raw_factor_capital_reduction_method_ratio_with_par_value_between_counts():
+    text = """
+    \uAC10\uC790 \uACB0\uC815
+    7. \uAC10\uC790\uBC29\uBC95
+    \uAE30\uBA85\uC2DD \uBCF4\uD1B5\uC8FC\uC2DD \uC561\uBA74\uAC00 500\uC6D0 30\uC8FC\uB97C \uB3D9\uC77C \uC561\uBA74\uAC00 500\uC6D0 1\uC8FC\uB85C \uBCD1\uD569
+    """
+    factor, rule = infer_raw_factor("CAPITAL_REDUCTION", text)
+    assert factor == 30.0
+    assert rule == "capital_reduction_ratio"
