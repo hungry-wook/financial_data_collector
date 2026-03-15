@@ -1,6 +1,6 @@
 from datetime import date
 
-from financial_data_collector.collect_dart_corporate_events import _derive_adjustment_apply_date, _derive_legal_effective_date, _map_event_type, collect_corporate_events, collect_corporate_events_and_rebuild_factors, repair_corporate_event_timings, run_dart_corporate_event_collection
+from financial_data_collector.collect_dart_corporate_events import _apply_activation_rules, _derive_adjustment_apply_date, _derive_legal_effective_date, _map_event_type, collect_corporate_events, collect_corporate_events_and_rebuild_factors, repair_corporate_event_timings, run_dart_corporate_event_collection
 from financial_data_collector.collectors import InstrumentCollector
 
 BONUS_REPORT = "\uC8FC\uC694\uC0AC\uD56D\uBCF4\uACE0\uC11C(\uBB34\uC0C1\uC99D\uC790\uACB0\uC815)"
@@ -1193,6 +1193,34 @@ def test_derive_adjustment_apply_date_can_differ_from_legal_effective_date():
 
     assert legal_effective_date == "2026-04-15"
     assert adjustment_apply_date == "2026-04-30"
+
+
+def test_apply_activation_rules_blocks_document_only_shareholder_rights_issue():
+    status, effective_date, activation_issue = _apply_activation_rules(
+        event_type="RIGHTS_ISSUE_SHAREHOLDER",
+        status="ACTIVE",
+        effective_date="2026-03-08",
+        ds005_row={},
+        payload={"factor_rule": "rights_issue_section1_3"},
+    )
+
+    assert status == "NEEDS_REVIEW"
+    assert effective_date == "2026-03-08"
+    assert activation_issue == "missing_pricing_inputs"
+
+
+def test_apply_activation_rules_blocks_document_only_split_merger():
+    status, effective_date, activation_issue = _apply_activation_rules(
+        event_type="SPLIT_MERGER",
+        status="ACTIVE",
+        effective_date="2026-03-08",
+        ds005_row={"report_nm": "주요사항보고서(분할(분할합병)결정)"},
+        payload={"factor_rule": "split_section4_before_after"},
+    )
+
+    assert status == "NEEDS_REVIEW"
+    assert effective_date == "2026-03-08"
+    assert activation_issue == "structural_company_split_unverified"
 
 
 def test_revision_chain_does_not_collapse_distinct_events_with_same_report_name(repo):

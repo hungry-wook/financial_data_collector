@@ -215,7 +215,7 @@ def _apply_activation_rules(
 
     if (
         status == "ACTIVE"
-        and event_type in {"RIGHTS_ISSUE", "RIGHTS_BONUS_ISSUE"}
+        and event_type in {"RIGHTS_ISSUE", "RIGHTS_BONUS_ISSUE", "RIGHTS_ISSUE_SHAREHOLDER"}
         and not has_ds005
         and any(
             factor_rule == rule or factor_rule.endswith(f"_{rule}")
@@ -225,6 +225,9 @@ def _apply_activation_rules(
         return "NEEDS_REVIEW", effective_date, "missing_pricing_inputs"
 
     if status == "ACTIVE" and event_type == "SPLIT" and "회사분할" in report_nm and not listing_like_date:
+        return "NEEDS_REVIEW", effective_date, "structural_company_split_unverified"
+
+    if status == "ACTIVE" and event_type == "SPLIT_MERGER" and not has_ds005:
         return "NEEDS_REVIEW", effective_date, "structural_company_split_unverified"
 
     if status == "ACTIVE" and event_type == "CAPITAL_REDUCTION" and not listing_like_date:
