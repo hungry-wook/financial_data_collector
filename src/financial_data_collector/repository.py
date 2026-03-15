@@ -1078,7 +1078,7 @@ class Repository:
         )
 
 
-    def find_split_trade_date(
+    def find_trade_date_by_listed_shares_ratio(
         self,
         instrument_id: str,
         date_from: str,
@@ -1121,6 +1121,22 @@ class Repository:
                     return row.get('trade_date')
             previous = row
         return None
+
+    def find_split_trade_date(
+        self,
+        instrument_id: str,
+        date_from: str,
+        date_to: str,
+        expected_factor: float,
+        tolerance: float = 0.002,
+    ) -> Optional[str]:
+        return self.find_trade_date_by_listed_shares_ratio(
+            instrument_id=instrument_id,
+            date_from=date_from,
+            date_to=date_to,
+            expected_factor=expected_factor,
+            tolerance=tolerance,
+        )
 
     def get_latest_trade_date(self) -> Optional[str]:
         rows = self.query(

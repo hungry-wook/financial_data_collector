@@ -89,6 +89,22 @@ class DARTClient:
             return
         cache_path.write_bytes(body)
 
+    @staticmethod
+    def _validate_document_body(body: bytes) -> bytes:
+        if not body:
+            raise DARTClientError("OpenDART document body is empty")
+
+        if body.lstrip().startswith(b"<") and b"<status>" in body[:5000]:
+            text = body.decode("utf-8", errors="ignore")
+            status = ""
+            message = ""
+            if "<status>" in text and "</status>" in text:
+                status = text.split("<status>", 1)[1].split("</status>", 1)[0].strip()
+            if "<message>" in text and "</message>" in text:
+                message = text.split("<message>", 1)[1].split("</message>", 1)[0].strip()
+            raise DARTClientError(f"OpenDART document error status={status or '?'}: {message or 'unknown'}")
+        return body
+
     def _corp_codes_cache_path(self) -> Optional[Path]:
         return self._cache_path("corp_codes", "corp_codes.json")
 
@@ -184,7 +200,7 @@ class DARTClient:
     def get_document_zip(self, rcept_no: str) -> bytes:
         cached = self._read_cached_document(rcept_no)
         if cached is not None:
-            return cached
+            return self._validate_document_body(cached)
         if self.config.offline_only:
             raise DARTClientError(f"OpenDART document cache miss for {rcept_no}")
 
@@ -199,20 +215,8 @@ class DARTClient:
         finally:
             self._call_count += 1
 
-        if not body:
-            raise DARTClientError("OpenDART document body is empty")
-
-        if body.lstrip().startswith(b"<") and b"<status>" in body[:5000]:
-            text = body.decode("utf-8", errors="ignore")
-            status = ""
-            message = ""
-            if "<status>" in text and "</status>" in text:
-                status = text.split("<status>", 1)[1].split("</status>", 1)[0].strip()
-            if "<message>" in text and "</message>" in text:
-                message = text.split("<message>", 1)[1].split("</message>", 1)[0].strip()
-            raise DARTClientError(f"OpenDART document error status={status or '?'}: {message or 'unknown'}")
         self._write_cached_document(rcept_no, body)
-        return body
+        return self._validate_document_body(body)
 
     def get_corp_codes(self) -> Dict[str, str]:
         cache_path = self._corp_codes_cache_path()

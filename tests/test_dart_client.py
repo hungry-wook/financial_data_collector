@@ -142,6 +142,22 @@ def test_document_zip_uses_cached_body_when_available(tmp_path):
     assert second_session.calls == []
 
 
+def test_document_zip_caches_error_body_and_reuses_it(tmp_path):
+    cache_root = tmp_path / "docs"
+    xml_error = b"<result><status>014</status><message>file does not exist</message></result>"
+    first_session = _FakeSession([_FakeResponse(content=xml_error)])
+    first = DARTClient(DARTClientConfig(api_key="k", cache_dir=str(cache_root)), session=first_session)
+
+    with pytest.raises(DARTClientError, match="status=014"):
+        first.get_document_zip("20260101000001")
+
+    second_session = _FakeSession([])
+    second = DARTClient(DARTClientConfig(api_key="k", cache_dir=str(cache_root)), session=second_session)
+    with pytest.raises(DARTClientError, match="status=014"):
+        second.get_document_zip("20260101000001")
+    assert second_session.calls == []
+
+
 
 def test_list_filings_offline_only_raises_on_cache_miss(tmp_path):
     session = _FakeSession([_FakeResponse(payload={"status": "000", "list": []})])

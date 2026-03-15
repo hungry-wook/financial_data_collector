@@ -118,6 +118,39 @@ class _FakeWithdrawnClient(_FakeClient):
         return buf.getvalue()
 
 
+class _FakeDocumentOnlyRightsClient(_FakeClient):
+    def list_filings(self, **kwargs):
+        self.calls.append(("list", kwargs))
+        return {
+            "status": "000",
+            "total_count": 1,
+            "list": [
+                {
+                    "corp_code": "x",
+                    "corp_name": KORP,
+                    "stock_code": "123456",
+                    "corp_cls": "K",
+                    "report_nm": RIGHTS_REPORT,
+                    "rcept_no": "20260308000010",
+                    "rcept_dt": "20260308",
+                }
+            ],
+        }
+
+    def get_document_zip(self, rcept_no):
+        self.calls.append(("doc", {"rcept_no": rcept_no}))
+        import io
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(
+                "a.html",
+                "<html><body>유상증자 결정 1. 신주의 종류와 수 보통주식 (주) 100 2. 1주당 액면가액 (원) 500 3. 증자전 발행주식총수 (주) 보통주식 (주) 900 신주 상장 예정일 2026년 03월 08일</body></html>",
+            )
+        return buf.getvalue()
+
+
 class _FakeRemoteChainClient(_FakeClient):
     def list_filings(self, **kwargs):
         self.calls.append(("list", kwargs))
@@ -281,6 +314,40 @@ class _FakeCapitalReductionDs005Client(_FakeClient):
         }
 
 
+class _FakeCapitalReductionMissingListingClient(_FakeClient):
+    def list_filings(self, **kwargs):
+        self.calls.append(("list", kwargs))
+        return {
+            "status": "000",
+            "total_count": 1,
+            "list": [
+                {
+                    "corp_code": "x",
+                    "corp_name": KORP,
+                    "stock_code": "123456",
+                    "corp_cls": "K",
+                    "report_nm": "주요사항보고서(감자결정)",
+                    "rcept_no": "20260308000009",
+                    "rcept_dt": "20260308",
+                }
+            ],
+        }
+
+    def get_capital_reduction_disclosures(self, **kwargs):
+        self.calls.append(("ds005", kwargs))
+        return {
+            "status": "000",
+            "list": [
+                {
+                    "rcept_no": "20260308000009",
+                    "bfcr_tisstk_ostk": "1000",
+                    "atcr_tisstk_ostk": "100",
+                    "crsc_nstklstprd": "-",
+                }
+            ],
+        }
+
+
 class _FakeRevisionWindowClient(_FakeClient):
     def __init__(self, report_nm: str, rcept_no: str, rcept_dt: str):
         super().__init__()
@@ -435,6 +502,43 @@ def _seed_split_market_history(repo):
                 "turnover_value": 51900000000,
                 "market_value": 333163951930000,
                 "listed_shares": 6419324700,
+                "source_name": "krx",
+                "collected_at": "2026-03-13T00:00:00Z",
+            },
+        ]
+    )
+
+
+def _seed_capital_reduction_market_history(repo):
+    instrument_id = repo.get_instrument_id_by_external_code("123456", market_code="KOSDAQ")
+    assert instrument_id is not None
+    repo.upsert_daily_market(
+        [
+            {
+                "instrument_id": instrument_id,
+                "trade_date": "2026-03-31",
+                "open": 10000,
+                "high": 10100,
+                "low": 9900,
+                "close": 10000,
+                "volume": 1000,
+                "turnover_value": 10000000,
+                "market_value": 1000000000,
+                "listed_shares": 1000,
+                "source_name": "krx",
+                "collected_at": "2026-03-13T00:00:00Z",
+            },
+            {
+                "instrument_id": instrument_id,
+                "trade_date": "2026-04-01",
+                "open": 100500,
+                "high": 101000,
+                "low": 100000,
+                "close": 100500,
+                "volume": 100,
+                "turnover_value": 10050000,
+                "market_value": 1005000000,
+                "listed_shares": 100,
                 "source_name": "krx",
                 "collected_at": "2026-03-13T00:00:00Z",
             },
@@ -623,10 +727,10 @@ def test_collect_corporate_events_recovers_factor_from_remote_revision_chain(rep
     )
 
     assert out["events_upserted"] == 1
-    assert out["active_events"] == 1
+    assert out["needs_review_events"] == 1
 
     rows = repo.query("SELECT status, raw_factor, payload->>'factor_rule' as factor_rule FROM corporate_events WHERE source_event_id = %s", ("20260308000004",))
-    assert rows[0]["status"] == "ACTIVE"
+    assert rows[0]["status"] == "NEEDS_REVIEW"
     assert rows[0]["raw_factor"] == 0.9
     assert rows[0]["factor_rule"] == "remote_chain_rights_issue_keyword_sections"
 
@@ -843,6 +947,70 @@ def test_collect_corporate_events_keeps_public_rights_issue_in_review_without_li
     assert rows[0]["activation_issue"] == "missing_listing_like_date"
 
 
+def test_collect_corporate_events_keeps_document_only_rights_issue_in_review_without_ds005_inputs(repo):
+    _seed_instrument(repo)
+
+    out = collect_corporate_events(
+        repo=repo,
+        client=_FakeDocumentOnlyRightsClient(),
+        bgn_de=date(2026, 3, 8),
+        end_de=date(2026, 3, 8),
+        verify_document=True,
+    )
+
+    assert out["events_upserted"] == 1
+    rows = repo.query(
+        "SELECT status, payload->>'activation_issue' AS activation_issue, raw_factor FROM corporate_events WHERE source_event_id = %s",
+        ("20260308000010",),
+    )
+    assert rows[0]["status"] == "NEEDS_REVIEW"
+    assert rows[0]["activation_issue"] == "missing_pricing_inputs"
+    assert float(rows[0]["raw_factor"]) == 0.9
+
+
+def test_collect_corporate_events_uses_market_trade_date_for_capital_reduction_without_listing_date(repo):
+    _seed_instrument(repo)
+    _seed_capital_reduction_market_history(repo)
+
+    out = collect_corporate_events(
+        repo=repo,
+        client=_FakeCapitalReductionMissingListingClient(),
+        bgn_de=date(2026, 3, 8),
+        end_de=date(2026, 3, 8),
+        verify_document=False,
+    )
+
+    assert out["events_upserted"] == 1
+    rows = repo.query(
+        "SELECT status, effective_date, payload->>'market_effective_date' AS market_effective_date FROM corporate_events WHERE source_event_id = %s",
+        ("20260308000009",),
+    )
+    assert rows[0]["status"] == "ACTIVE"
+    assert rows[0]["effective_date"] == "2026-04-01"
+    assert rows[0]["market_effective_date"] == "2026-04-01"
+
+
+def test_collect_corporate_events_blocks_capital_reduction_without_listing_or_market_date(repo):
+    _seed_instrument(repo)
+
+    out = collect_corporate_events(
+        repo=repo,
+        client=_FakeCapitalReductionMissingListingClient(),
+        bgn_de=date(2026, 3, 8),
+        end_de=date(2026, 3, 8),
+        verify_document=False,
+    )
+
+    assert out["events_upserted"] == 1
+    rows = repo.query(
+        "SELECT status, effective_date, payload->>'activation_issue' AS activation_issue FROM corporate_events WHERE source_event_id = %s",
+        ("20260308000009",),
+    )
+    assert rows[0]["status"] == "NEEDS_REVIEW"
+    assert rows[0]["effective_date"] == "2026-03-08"
+    assert rows[0]["activation_issue"] == "missing_listing_like_date"
+
+
 def test_repair_corporate_event_timings_moves_capital_reduction_to_listing_date(repo):
     _seed_instrument(repo)
 
@@ -866,6 +1034,52 @@ def test_repair_corporate_event_timings_moves_capital_reduction_to_listing_date(
     assert rows[0]["effective_date"] == "2026-04-30"
     assert rows[0]["status"] == "ACTIVE"
     assert rows[0]["repair_effective_date"] == "2026-04-30"
+
+
+def test_repair_corporate_event_timings_uses_market_date_for_capital_reduction_without_listing_date(repo):
+    _seed_instrument(repo)
+    _seed_capital_reduction_market_history(repo)
+    instrument_id = repo.get_instrument_id_by_external_code("123456", market_code="KOSDAQ")
+    assert instrument_id
+    repo.upsert_corporate_events(
+        [
+            {
+                "event_id": "evt_capred_market",
+                "event_version": 1,
+                "instrument_id": instrument_id,
+                "event_type": "CAPITAL_REDUCTION",
+                "announce_date": "2026-03-08",
+                "effective_date": "2026-03-08",
+                "source_event_id": "repair-capred-market",
+                "source_name": "opendart",
+                "collected_at": "2026-03-13T00:00:00Z",
+                "run_id": None,
+                "raw_factor": 10.0,
+                "confidence": "HIGH",
+                "status": "ACTIVE",
+                "payload": {
+                    "report_nm": "주요사항보고서(감자결정)",
+                    "ds005_row": {
+                        "bfcr_tisstk_ostk": "1000",
+                        "atcr_tisstk_ostk": "100",
+                        "crsc_nstklstprd": "-",
+                    },
+                    "factor_rule": "ds005_exact",
+                },
+            }
+        ]
+    )
+
+    out = repair_corporate_event_timings(repo, "2026-03-01", "2026-04-30")
+    assert out["upserted"] >= 1
+
+    rows = repo.query(
+        "SELECT effective_date, status, payload->>'market_effective_date' AS market_effective_date FROM corporate_events WHERE source_event_id = %s",
+        ("repair-capred-market",),
+    )
+    assert rows[0]["effective_date"] == "2026-04-01"
+    assert rows[0]["status"] == "ACTIVE"
+    assert rows[0]["market_effective_date"] == "2026-04-01"
 
 
 def test_repair_corporate_event_timings_blocks_duplicate_bonus_when_rights_bonus_exists(repo):

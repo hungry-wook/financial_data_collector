@@ -213,11 +213,25 @@ def _apply_activation_rules(
     factor_rule = str(payload.get("factor_rule") or "")
     has_ds005 = bool(ds005_row) and any(k != "report_nm" for k in ds005_row.keys())
 
-    if status == "ACTIVE" and event_type in {"RIGHTS_ISSUE", "RIGHTS_BONUS_ISSUE"} and not has_ds005 and factor_rule in {"rights_issue_share_count", "rights_issue_keyword_sections", "rights_issue_section1_3"}:
+    if (
+        status == "ACTIVE"
+        and event_type in {"RIGHTS_ISSUE", "RIGHTS_BONUS_ISSUE"}
+        and not has_ds005
+        and any(
+            factor_rule == rule or factor_rule.endswith(f"_{rule}")
+            for rule in {"rights_issue_share_count", "rights_issue_keyword_sections", "rights_issue_section1_3"}
+        )
+    ):
         return "NEEDS_REVIEW", effective_date, "missing_pricing_inputs"
 
     if status == "ACTIVE" and event_type == "SPLIT" and "회사분할" in report_nm and not listing_like_date:
         return "NEEDS_REVIEW", effective_date, "structural_company_split_unverified"
+
+    if status == "ACTIVE" and event_type == "CAPITAL_REDUCTION" and not listing_like_date:
+        market_effective_date = str(payload.get("market_effective_date") or "").strip()
+        if market_effective_date:
+            return status, market_effective_date, None
+        return "NEEDS_REVIEW", effective_date, "missing_listing_like_date"
 
     return status, effective_date, None
 
@@ -515,7 +529,28 @@ def _infer_market_split_effective_date(
     except ValueError:
         return None
     end = start + timedelta(days=180)
-    return repo.find_split_trade_date(
+    return repo.find_trade_date_by_listed_shares_ratio(
+        instrument_id=instrument_id,
+        date_from=start.isoformat(),
+        date_to=end.isoformat(),
+        expected_factor=float(raw_factor),
+    )
+
+
+def _infer_market_capital_reduction_effective_date(
+    repo: Repository,
+    instrument_id: Optional[str],
+    announce_date: Optional[str],
+    raw_factor: Optional[float],
+) -> Optional[str]:
+    if not instrument_id or not announce_date or raw_factor is None:
+        return None
+    try:
+        start = date.fromisoformat(str(announce_date))
+    except ValueError:
+        return None
+    end = start + timedelta(days=365)
+    return repo.find_trade_date_by_listed_shares_ratio(
         instrument_id=instrument_id,
         date_from=start.isoformat(),
         date_to=end.isoformat(),
@@ -930,17 +965,41 @@ def collect_corporate_events(
                         "validated_at": now,
                     }
                 )
+        split_market_effective_date = None
+        capital_reduction_market_effective_date = None
         if event_type == "SPLIT" and raw_factor is not None and raw_factor > 0:
-            market_effective_date = _infer_market_split_effective_date(
+            split_market_effective_date = _infer_market_split_effective_date(
                 repo=repo,
                 instrument_id=instrument_id,
                 announce_date=announce_date,
                 raw_factor=raw_factor,
             )
-            if market_effective_date:
-                effective_date = market_effective_date
+            if split_market_effective_date:
+                effective_date = split_market_effective_date
+        if event_type == "CAPITAL_REDUCTION" and raw_factor is not None and raw_factor > 0:
+            capital_reduction_market_effective_date = _infer_market_capital_reduction_effective_date(
+                repo=repo,
+                instrument_id=instrument_id,
+                announce_date=announce_date,
+                raw_factor=raw_factor,
+            )
+            if capital_reduction_market_effective_date:
+                effective_date = capital_reduction_market_effective_date
 
         payload = dict(filing)
+        payload["factor_rule"] = factor_rule
+        payload["mapping_source"] = mapping_source
+        payload["revision_anchor"] = revision_anchor
+        payload["revision_chain_date"] = chain_date
+        payload["ds005_match_type"] = ds005_match_type
+        payload["announce_date_rule"] = "rcept_dt" if announce_date else None
+        payload["legal_effective_date"] = legal_effective_date
+        payload["adjustment_apply_date"] = effective_date
+        payload["effective_date_rule"] = "adjustment_apply_date" if effective_date else None
+        if split_market_effective_date:
+            payload["market_effective_date"] = split_market_effective_date
+        if capital_reduction_market_effective_date:
+            payload["market_effective_date"] = capital_reduction_market_effective_date
         status, effective_date, activation_issue = _apply_activation_rules(
             event_type=event_type,
             status=status,
@@ -977,16 +1036,10 @@ def collect_corporate_events(
             chain_factor_cache[chain_key] = raw_factor
 
         event_id = f"dart:{rcept_no}:{event_type}"
-        payload["factor_rule"] = factor_rule
-        payload["mapping_source"] = mapping_source
-        payload["revision_anchor"] = revision_anchor
-        payload["revision_chain_date"] = chain_date
-        payload["ds005_match_type"] = ds005_match_type
-        payload["announce_date_rule"] = "rcept_dt" if announce_date else None
         payload["legal_effective_date"] = legal_effective_date
         payload["adjustment_apply_date"] = effective_date
         payload["effective_date_rule"] = "adjustment_apply_date" if effective_date else None
-        if event_type == "SPLIT" and raw_factor is not None and raw_factor > 0:
+        if split_market_effective_date or capital_reduction_market_effective_date:
             payload["market_effective_date"] = effective_date
         if activation_issue:
             payload["activation_issue"] = activation_issue
@@ -1130,6 +1183,33 @@ def repair_corporate_event_timings(
             "",
             legal_effective_date=derived_legal_effective_date,
         ) or row.get("effective_date")
+        split_market_effective_date = None
+        capital_reduction_market_effective_date = None
+        raw_factor = row.get("raw_factor")
+        announce_date = row.get("announce_date")
+        if derived_event_type == "SPLIT" and raw_factor is not None:
+            split_market_effective_date = _infer_market_split_effective_date(
+                repo=repo,
+                instrument_id=row.get("instrument_id"),
+                announce_date=announce_date,
+                raw_factor=raw_factor,
+            )
+            if split_market_effective_date:
+                derived_effective_date = split_market_effective_date
+        if derived_event_type == "CAPITAL_REDUCTION" and raw_factor is not None:
+            capital_reduction_market_effective_date = _infer_market_capital_reduction_effective_date(
+                repo=repo,
+                instrument_id=row.get("instrument_id"),
+                announce_date=announce_date,
+                raw_factor=raw_factor,
+            )
+            if capital_reduction_market_effective_date:
+                derived_effective_date = capital_reduction_market_effective_date
+        payload["factor_rule"] = payload.get("factor_rule")
+        if split_market_effective_date:
+            payload["market_effective_date"] = split_market_effective_date
+        if capital_reduction_market_effective_date:
+            payload["market_effective_date"] = capital_reduction_market_effective_date
         new_status, derived_effective_date, activation_issue = _apply_activation_rules(
             event_type=derived_event_type,
             status=str(row.get("status") or "NEEDS_REVIEW"),
