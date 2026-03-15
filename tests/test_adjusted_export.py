@@ -29,8 +29,8 @@ def test_export_adjusted_series_uses_materialized_factor(repo, tmp_path):
 
     DailyMarketCollector(repo).collect(
         [
-            {"instrument_id": instrument_id, "trade_date": date(2026, 1, 2), "open": 100, "high": 110, "low": 90, "close": 100, "volume": 10},
-            {"instrument_id": instrument_id, "trade_date": date(2026, 1, 3), "open": 50, "high": 55, "low": 45, "close": 50, "volume": 10},
+            {"instrument_id": instrument_id, "trade_date": date(2026, 1, 2), "open": 100, "high": 110, "low": 90, "close": 100, "volume": 10, "listed_shares": 100},
+            {"instrument_id": instrument_id, "trade_date": date(2026, 1, 3), "open": 50, "high": 55, "low": 45, "close": 50, "volume": 10, "listed_shares": 200},
         ],
         "krx",
         "r1",

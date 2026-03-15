@@ -22,9 +22,9 @@ def test_adjustment_service_builds_cumulative_factor(repo):
 
     DailyMarketCollector(repo).collect(
         [
-            {"instrument_id": instrument_id, "trade_date": date(2026, 1, 2), "open": 100, "high": 110, "low": 90, "close": 100, "volume": 10},
-            {"instrument_id": instrument_id, "trade_date": date(2026, 1, 3), "open": 50, "high": 55, "low": 45, "close": 50, "volume": 10},
-            {"instrument_id": instrument_id, "trade_date": date(2026, 1, 6), "open": 55, "high": 60, "low": 50, "close": 55, "volume": 10},
+            {"instrument_id": instrument_id, "trade_date": date(2026, 1, 2), "open": 100, "high": 110, "low": 90, "close": 100, "volume": 10, "listed_shares": 100},
+            {"instrument_id": instrument_id, "trade_date": date(2026, 1, 3), "open": 50, "high": 55, "low": 45, "close": 50, "volume": 10, "listed_shares": 200},
+            {"instrument_id": instrument_id, "trade_date": date(2026, 1, 6), "open": 55, "high": 60, "low": 50, "close": 55, "volume": 10, "listed_shares": 200},
         ],
         "krx",
         "r1",
@@ -70,6 +70,67 @@ def test_adjustment_service_builds_cumulative_factor(repo):
     # event day and after stay at latest basis
     assert rows[1]["cumulative_factor"] == 1.0
     assert rows[2]["cumulative_factor"] == 1.0
+
+
+def test_adjustment_service_falls_back_to_event_factor_without_listed_share_change(repo):
+    InstrumentCollector(repo).collect(
+        [
+            {
+                "instrument_id": "i_adj_fb",
+                "external_code": "654321",
+                "market_code": "KOSDAQ",
+                "instrument_name": "Adj Fallback",
+                "listing_date": date(2020, 1, 1),
+            }
+        ],
+        "krx",
+    )
+    instrument_id = repo.get_instrument_id_by_external_code("654321", market_code="KOSDAQ")
+    assert instrument_id
+
+    DailyMarketCollector(repo).collect(
+        [
+            {"instrument_id": instrument_id, "trade_date": date(2026, 1, 2), "open": 100, "high": 110, "low": 90, "close": 100, "volume": 10},
+            {"instrument_id": instrument_id, "trade_date": date(2026, 1, 3), "open": 50, "high": 55, "low": 45, "close": 50, "volume": 10},
+        ],
+        "krx",
+        "r1",
+    )
+    repo.upsert_corporate_events(
+        [
+            {
+                "event_id": "evt_fb",
+                "event_version": 1,
+                "instrument_id": instrument_id,
+                "event_type": "BONUS_ISSUE",
+                "announce_date": "2026-01-03",
+                "effective_date": "2026-01-03",
+                "source_event_id": "20260103000011",
+                "source_name": "opendart",
+                "collected_at": "2026-01-03T00:00:00Z",
+                "raw_factor": 0.5,
+                "confidence": "HIGH",
+                "status": "ACTIVE",
+                "payload": {"ratio": 0.5},
+            }
+        ]
+    )
+
+    out = AdjustmentService(repo).rebuild_factors("2026-01-01", "2026-01-10")
+    assert out["event_date_count"] == 1
+
+    rows = repo.query(
+        """
+        SELECT trade_date, factor, cumulative_factor, factor_source
+        FROM price_adjustment_factors
+        WHERE instrument_id = %s AND as_of_date = DATE '9999-12-31'
+        ORDER BY trade_date
+        """,
+        (instrument_id,),
+    )
+    assert rows[0]["cumulative_factor"] == 0.5
+    assert rows[1]["factor"] == 0.5
+    assert rows[1]["factor_source"] == "corporate_event_fallback"
 
 
 

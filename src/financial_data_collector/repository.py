@@ -1077,6 +1077,30 @@ class Repository:
             (date_from, date_to),
         )
 
+    def get_market_adjustment_inputs(self, date_from: str, date_to: str) -> List[Dict]:
+        return self.query(
+            """
+            WITH ranked AS (
+                SELECT instrument_id,
+                       trade_date,
+                       listed_shares,
+                       LAG(listed_shares) OVER (
+                           PARTITION BY instrument_id
+                           ORDER BY trade_date
+                       ) AS prev_listed_shares
+                FROM daily_market_data
+            )
+            SELECT instrument_id,
+                   trade_date,
+                   listed_shares,
+                   prev_listed_shares
+            FROM ranked
+            WHERE trade_date BETWEEN %s AND %s
+            ORDER BY instrument_id, trade_date
+            """,
+            (date_from, date_to),
+        )
+
 
     def find_trade_date_by_listed_shares_ratio(
         self,
