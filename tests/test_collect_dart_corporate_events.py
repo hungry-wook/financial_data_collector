@@ -1082,6 +1082,47 @@ def test_repair_corporate_event_timings_uses_market_date_for_capital_reduction_w
     assert rows[0]["market_effective_date"] == "2026-04-01"
 
 
+def test_repair_corporate_event_timings_preserves_stored_adjustment_apply_date(repo):
+    _seed_instrument(repo)
+    instrument_id = repo.get_instrument_id_by_external_code("123456", market_code="KOSDAQ")
+    assert instrument_id
+    repo.upsert_corporate_events(
+        [
+            {
+                "event_id": "evt_split_preserve_apply_date",
+                "event_version": 1,
+                "instrument_id": instrument_id,
+                "event_type": "SPLIT",
+                "announce_date": "2026-03-08",
+                "effective_date": "2026-03-08",
+                "source_event_id": "repair-split-apply-date",
+                "source_name": "opendart",
+                "collected_at": "2026-03-13T00:00:00Z",
+                "run_id": None,
+                "raw_factor": 0.1,
+                "confidence": "HIGH",
+                "status": "ACTIVE",
+                "payload": {
+                    "report_nm": "주식분할결정",
+                    "legal_effective_date": "2026-05-11",
+                    "adjustment_apply_date": "2026-05-11",
+                    "factor_rule": "split_share_count_ratio",
+                },
+            }
+        ]
+    )
+
+    out = repair_corporate_event_timings(repo, "2026-03-01", "2026-06-01")
+    assert out["upserted"] >= 1
+
+    row = repo.query(
+        "SELECT effective_date, payload->>'repair_effective_date' AS repair_effective_date FROM corporate_events WHERE source_event_id = %s",
+        ("repair-split-apply-date",),
+    )[0]
+    assert row["effective_date"] == "2026-05-11"
+    assert row["repair_effective_date"] == "2026-05-11"
+
+
 def test_repair_corporate_event_timings_blocks_duplicate_bonus_when_rights_bonus_exists(repo):
     _seed_instrument(repo)
     instrument_id = repo.get_instrument_id_by_external_code("123456", market_code="KOSDAQ")

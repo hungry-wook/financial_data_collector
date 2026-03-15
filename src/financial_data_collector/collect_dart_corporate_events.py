@@ -1178,14 +1178,14 @@ def repair_corporate_event_timings(
         if payload.get("report_nm") and not ds005_row.get("report_nm"):
             ds005_row["report_nm"] = payload.get("report_nm")
         derived_event_type = _derive_event_type(str(row.get("event_type") or ""), ds005_row, "")
-        derived_legal_effective_date = _derive_legal_effective_date(derived_event_type, payload, ds005_row, "")
+        derived_legal_effective_date = _derive_legal_effective_date(derived_event_type, payload, ds005_row, "") or payload.get("legal_effective_date")
         derived_effective_date = _derive_adjustment_apply_date(
             derived_event_type,
             payload,
             ds005_row,
             "",
             legal_effective_date=derived_legal_effective_date,
-        ) or row.get("effective_date")
+        ) or payload.get("adjustment_apply_date") or row.get("effective_date")
         split_market_effective_date = None
         capital_reduction_market_effective_date = None
         raw_factor = row.get("raw_factor")
