@@ -1083,7 +1083,12 @@ class Repository:
             WITH ranked AS (
                 SELECT instrument_id,
                        trade_date,
+                       close,
                        listed_shares,
+                       LAG(close) OVER (
+                           PARTITION BY instrument_id
+                           ORDER BY trade_date
+                       ) AS prev_close,
                        LAG(listed_shares) OVER (
                            PARTITION BY instrument_id
                            ORDER BY trade_date
@@ -1092,7 +1097,9 @@ class Repository:
             )
             SELECT instrument_id,
                    trade_date,
+                   close,
                    listed_shares,
+                   prev_close,
                    prev_listed_shares
             FROM ranked
             WHERE trade_date BETWEEN %s AND %s
