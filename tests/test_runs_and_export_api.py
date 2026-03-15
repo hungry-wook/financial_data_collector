@@ -12,8 +12,9 @@ from financial_data_collector.runs import RunManager
 
 class FakeParquetWriter:
     def write(self, path: Path, rows):
-        path.write_text(json.dumps(rows), encoding="utf-8")
-        return len(rows)
+        row_list = list(rows)
+        path.write_text(json.dumps(row_list), encoding="utf-8")
+        return len(row_list)
 
     def sha256(self, path: Path):
         return "fakehash"
@@ -27,9 +28,10 @@ class CapturingParquetWriter(FakeParquetWriter):
         self.schemas = {}
 
     def write(self, path: Path, rows):
-        keys = list(rows[0].keys()) if rows else []
+        row_list = list(rows)
+        keys = list(row_list[0].keys()) if row_list else []
         self.schemas[path.name] = keys
-        return super().write(path, rows)
+        return super().write(path, row_list)
 
 
 def _seed_data(repo):
@@ -108,6 +110,31 @@ def test_export_service_happy_path(repo, tmp_path):
     assert done["status"] == "SUCCEEDED"
     assert (tmp_path / "out" / "instrument_daily.parquet").exists()
     assert (tmp_path / "out" / "manifest.json").exists()
+
+
+def test_export_service_uses_streaming_repository_methods(repo, tmp_path, monkeypatch):
+    _seed_data(repo)
+    svc = ExportService(repo, writer=FakeParquetWriter())
+
+    monkeypatch.setattr(repo, "get_core_market", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy market query used")))
+    monkeypatch.setattr(repo, "get_benchmark", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy benchmark query used")))
+    monkeypatch.setattr(repo, "get_calendar", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy calendar query used")))
+    monkeypatch.setattr(repo, "get_issues", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy issues query used")))
+
+    job = svc.create_job(
+        ExportRequest(
+            market_codes=["KOSDAQ"],
+            index_codes=["KOSDAQ"],
+            date_from="2026-01-01",
+            date_to="2026-01-03",
+            include_issues=True,
+            output_format="parquet",
+            output_path=(tmp_path / "stream_out").as_posix(),
+        )
+    )
+
+    done = svc.run_job(job["job_id"])
+    assert done["status"] == "SUCCEEDED"
 
 
 def test_export_service_persists_job_state_in_db(repo, tmp_path):

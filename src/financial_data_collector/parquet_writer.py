@@ -9,16 +9,40 @@ class ParquetWriterError(RuntimeError):
 
 
 class ParquetWriter:
-    def write(self, path: Path, rows: List[Dict]) -> int:
+    def write(self, path: Path, rows: Iterable[Dict], batch_size: int = 10000) -> int:
         try:
             import pyarrow as pa
             import pyarrow.parquet as pq
         except ImportError as exc:
             raise ParquetWriterError("pyarrow is required for parquet export") from exc
 
-        table = pa.Table.from_pylist(rows)
-        pq.write_table(table, path.as_posix())
-        return len(rows)
+        total_rows = 0
+        parquet_writer = None
+        batch: List[Dict] = []
+        try:
+            for row in rows:
+                batch.append(row)
+                if len(batch) >= batch_size:
+                    table = pa.Table.from_pylist(batch)
+                    if parquet_writer is None:
+                        parquet_writer = pq.ParquetWriter(path.as_posix(), table.schema)
+                    parquet_writer.write_table(table)
+                    total_rows += len(batch)
+                    batch = []
+            if batch:
+                table = pa.Table.from_pylist(batch)
+                if parquet_writer is None:
+                    parquet_writer = pq.ParquetWriter(path.as_posix(), table.schema)
+                parquet_writer.write_table(table)
+                total_rows += len(batch)
+            if parquet_writer is None:
+                empty_table = pa.table({})
+                pq.write_table(empty_table, path.as_posix())
+                return 0
+            return total_rows
+        finally:
+            if parquet_writer is not None:
+                parquet_writer.close()
 
     @staticmethod
     def sha256(path: Path) -> str:

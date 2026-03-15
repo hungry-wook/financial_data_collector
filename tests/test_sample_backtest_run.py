@@ -6,8 +6,9 @@ from financial_data_collector.sample_backtest_run import SampleRunConfig, run_ba
 
 class FakeParquetWriter:
     def write(self, path, rows):
-        path.write_text(json.dumps(rows), encoding="utf-8")
-        return len(rows)
+        row_list = list(rows)
+        path.write_text(json.dumps(row_list), encoding="utf-8")
+        return len(row_list)
 
     def sha256(self, path):
         return "fakehash"

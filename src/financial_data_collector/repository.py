@@ -1,9 +1,10 @@
+from contextlib import closing
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 import time
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, Iterator, List, Optional
 from uuid import UUID
 
 import psycopg
@@ -538,18 +539,42 @@ class Repository:
             cur = conn.execute(query_text, params)
             out: List[Dict] = []
             for row in cur.fetchall():
-                normalized: Dict = {}
-                for key, value in dict(row).items():
-                    if isinstance(value, (date, datetime)):
-                        normalized[key] = value.isoformat()
-                    elif isinstance(value, UUID):
-                        normalized[key] = str(value)
-                    elif isinstance(value, Decimal):
-                        normalized[key] = float(value)
-                    else:
-                        normalized[key] = value
-                out.append(normalized)
+                out.append(self._normalize_row(dict(row)))
             return out
+
+    @staticmethod
+    def _normalize_row(row: Dict) -> Dict:
+        normalized: Dict = {}
+        for key, value in row.items():
+            if isinstance(value, (date, datetime)):
+                normalized[key] = value.isoformat()
+            elif isinstance(value, UUID):
+                normalized[key] = str(value)
+            elif isinstance(value, Decimal):
+                normalized[key] = float(value)
+            else:
+                normalized[key] = value
+        return normalized
+
+    def stream_query(self, query_text: str, params: tuple = (), fetch_size: int = 10000) -> Iterator[Dict]:
+        if "?" in query_text and "%s" not in query_text:
+            query_text = query_text.replace("?", "%s")
+        conn_ctx = self.connect()
+        conn = conn_ctx.__enter__()
+        try:
+            with closing(conn.cursor()) as cur:
+                cur.execute(query_text, params)
+                while True:
+                    rows = cur.fetchmany(fetch_size)
+                    if not rows:
+                        break
+                    for row in rows:
+                        yield self._normalize_row(dict(row))
+        except Exception:
+            conn_ctx.__exit__(*__import__("sys").exc_info())
+            raise
+        else:
+            conn_ctx.__exit__(None, None, None)
 
     def get_core_market(
         self,
@@ -671,6 +696,128 @@ class Repository:
         params.extend(codes)
         params.extend([date_from, date_to])
         return self.query(sql_text, tuple(params))
+
+    def stream_core_market(
+        self,
+        market_codes: Iterable[str],
+        date_from: str,
+        date_to: str,
+        series_type: str = "raw",
+        as_of_timestamp: Optional[str] = None,
+        fetch_size: int = 10000,
+    ) -> Iterator[Dict]:
+        codes = [str(c).upper() for c in market_codes if str(c).strip()]
+        if not codes:
+            return iter(())
+        placeholders = ", ".join(["%s"] * len(codes))
+        as_of_date = "9999-12-31"
+        if as_of_timestamp:
+            as_of_date = str(as_of_timestamp).strip().split("T", 1)[0]
+
+        normalized_series = str(series_type or "raw").strip().lower()
+        if normalized_series not in {"raw", "adjusted", "both"}:
+            raise ValueError("series_type must be one of: raw, adjusted, both")
+
+        if normalized_series == "raw":
+            select_clause = """
+            SELECT d.instrument_id,
+                   i.external_code,
+                   i.market_code,
+                   i.instrument_name,
+                   i.listing_date,
+                   i.delisting_date,
+                   d.trade_date,
+                   d.open,
+                   d.high,
+                   d.low,
+                   d.close,
+                   d.volume,
+                   d.turnover_value,
+                   d.market_value,
+                   d.is_trade_halted,
+                   d.is_under_supervision,
+                   d.record_status,
+                   d.source_name,
+                   d.collected_at
+            FROM daily_market_data d
+            JOIN instruments i ON i.instrument_id = d.instrument_id
+            """
+        elif normalized_series == "adjusted":
+            select_clause = """
+            SELECT d.instrument_id,
+                   i.external_code,
+                   i.market_code,
+                   i.instrument_name,
+                   i.listing_date,
+                   i.delisting_date,
+                   d.trade_date,
+                   d.open * COALESCE(p.cumulative_factor, 1.0) AS open,
+                   d.high * COALESCE(p.cumulative_factor, 1.0) AS high,
+                   d.low * COALESCE(p.cumulative_factor, 1.0) AS low,
+                   d.close * COALESCE(p.cumulative_factor, 1.0) AS close,
+                   d.volume / COALESCE(NULLIF(p.cumulative_factor, 0), 1.0) AS volume,
+                   d.turnover_value,
+                   d.market_value,
+                   d.is_trade_halted,
+                   d.is_under_supervision,
+                   d.record_status,
+                   d.source_name,
+                   d.collected_at
+            FROM daily_market_data d
+            JOIN instruments i ON i.instrument_id = d.instrument_id
+            LEFT JOIN price_adjustment_factors p
+              ON p.instrument_id = d.instrument_id
+             AND p.trade_date = d.trade_date
+             AND p.as_of_date = %s
+            """
+        else:
+            select_clause = """
+            SELECT d.instrument_id,
+                   i.external_code,
+                   i.market_code,
+                   i.instrument_name,
+                   i.listing_date,
+                   i.delisting_date,
+                   d.trade_date,
+                   d.open,
+                   d.high,
+                   d.low,
+                   d.close,
+                   d.open * COALESCE(p.cumulative_factor, 1.0) AS adj_open,
+                   d.high * COALESCE(p.cumulative_factor, 1.0) AS adj_high,
+                   d.low * COALESCE(p.cumulative_factor, 1.0) AS adj_low,
+                   d.close * COALESCE(p.cumulative_factor, 1.0) AS adj_close,
+                   d.volume,
+                   d.volume / COALESCE(NULLIF(p.cumulative_factor, 0), 1.0) AS adj_volume,
+                   d.turnover_value,
+                   d.market_value,
+                   d.is_trade_halted,
+                   d.is_under_supervision,
+                   d.record_status,
+                   d.source_name,
+                   d.collected_at
+            FROM daily_market_data d
+            JOIN instruments i ON i.instrument_id = d.instrument_id
+            LEFT JOIN price_adjustment_factors p
+              ON p.instrument_id = d.instrument_id
+             AND p.trade_date = d.trade_date
+             AND p.as_of_date = %s
+            """
+
+        sql_text = f"""
+            {select_clause}
+            WHERE i.market_code IN ({placeholders})
+              AND d.trade_date BETWEEN %s AND %s
+              AND d.trade_date >= i.listing_date
+              AND (i.delisting_date IS NULL OR d.trade_date < i.delisting_date)
+            ORDER BY d.trade_date, i.market_code, d.instrument_id
+        """
+        params: List = []
+        if normalized_series in {"adjusted", "both"}:
+            params.append(as_of_date)
+        params.extend(codes)
+        params.extend([date_from, date_to])
+        return self.stream_query(sql_text, tuple(params), fetch_size=fetch_size)
     def get_signal_market(
         self,
         market_codes: Iterable[str],
@@ -742,6 +889,52 @@ class Repository:
             ORDER BY trade_date, index_code, index_name
             """,
             tuple(params),
+        )
+
+    def stream_benchmark(
+        self,
+        index_codes: Iterable[str],
+        date_from: str,
+        date_to: str,
+        series_names: Optional[Iterable[str]] = None,
+        fetch_size: int = 10000,
+    ) -> Iterator[Dict]:
+        codes = list(index_codes)
+        if not codes:
+            return iter(())
+        code_placeholders = ", ".join(["%s"] * len(codes))
+        params: List = list(codes) + [date_from, date_to]
+        where_series = ""
+        names = [str(name).strip() for name in (series_names or []) if str(name).strip()]
+        if names:
+            series_placeholders = ", ".join(["%s"] * len(names))
+            where_series = f" AND index_name IN ({series_placeholders})"
+            params.extend(names)
+        else:
+            default_series = self.get_default_benchmark_series_map(codes)
+            if not default_series:
+                return iter(())
+            pair_filters = []
+            for code in codes:
+                default_name = default_series.get(code)
+                if not default_name:
+                    continue
+                pair_filters.append("(index_code = %s AND index_name = %s)")
+                params.extend([code, default_name])
+            if not pair_filters:
+                return iter(())
+            where_series = f" AND ({' OR '.join(pair_filters)})"
+        return self.stream_query(
+            f"""
+            SELECT index_code, index_name, trade_date, open, high, low, close, record_status
+            FROM benchmark_dataset_v1
+            WHERE index_code IN ({code_placeholders})
+              AND trade_date BETWEEN %s AND %s
+              {where_series}
+            ORDER BY trade_date, index_code, index_name
+            """,
+            tuple(params),
+            fetch_size=fetch_size,
         )
 
     def get_default_benchmark_series(self, index_code: str) -> Optional[str]:
@@ -837,6 +1030,29 @@ class Repository:
             tuple(codes + [date_from, date_to]),
         )
 
+    def stream_calendar(
+        self,
+        market_codes: Iterable[str],
+        date_from: str,
+        date_to: str,
+        fetch_size: int = 10000,
+    ) -> Iterator[Dict]:
+        codes = [str(c).upper() for c in market_codes if str(c).strip()]
+        if not codes:
+            return iter(())
+        placeholders = ", ".join(["%s"] * len(codes))
+        return self.stream_query(
+            f"""
+            SELECT market_code, trade_date, is_open, holiday_name
+            FROM trading_calendar_v1
+            WHERE market_code IN ({placeholders})
+              AND trade_date BETWEEN %s AND %s
+            ORDER BY market_code, trade_date
+            """,
+            tuple(codes + [date_from, date_to]),
+            fetch_size=fetch_size,
+        )
+
     def get_issues(self, date_from: str, date_to: str) -> List[Dict]:
         return self.query(
             """
@@ -848,6 +1064,20 @@ class Repository:
             ORDER BY detected_at
             """,
             (date_from, date_to),
+        )
+
+    def stream_issues(self, date_from: str, date_to: str, fetch_size: int = 10000) -> Iterator[Dict]:
+        return self.stream_query(
+            """
+            SELECT dataset_name, trade_date, instrument_id, index_code, issue_code,
+                   severity, issue_detail, run_id, detected_at
+            FROM data_quality_issues
+            WHERE trade_date BETWEEN %s AND %s
+              AND severity IN ('WARN', 'ERROR')
+            ORDER BY detected_at
+            """,
+            (date_from, date_to),
+            fetch_size=fetch_size,
         )
 
     def get_adjustment_factor_gaps(

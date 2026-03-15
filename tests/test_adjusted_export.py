@@ -9,8 +9,9 @@ from financial_data_collector.export_service import ExportRequest, ExportService
 
 class _Writer:
     def write(self, path, rows):
-        path.write_text(json.dumps(rows), encoding="utf-8")
-        return len(rows)
+        row_list = list(rows)
+        path.write_text(json.dumps(row_list), encoding="utf-8")
+        return len(row_list)
 
     def sha256(self, path):
         return "x"

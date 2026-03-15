@@ -48,6 +48,8 @@ class ExportRequest:
 
 
 class ExportService:
+    STREAM_FETCH_SIZE = 10000
+
     def __init__(self, repo: Repository, writer: Optional[ParquetWriter] = None, adjustment_service: Optional[AdjustmentService] = None):
         self.repo = repo
         self.writer = writer or ParquetWriter()
@@ -87,21 +89,32 @@ class ExportService:
 
         try:
             self._assert_adjusted_factor_coverage(req)
-            instrument_rows = self.repo.get_core_market(
+            instrument_rows = self.repo.stream_core_market(
                 req.market_codes,
                 req.date_from,
                 req.date_to,
                 series_type=req.series_type,
                 as_of_timestamp=req.as_of_timestamp,
+                fetch_size=self.STREAM_FETCH_SIZE,
             )
-            benchmark_rows = self.repo.get_benchmark(
+            benchmark_rows = self.repo.stream_benchmark(
                 req.index_codes,
                 req.date_from,
                 req.date_to,
                 series_names=req.series_names,
+                fetch_size=self.STREAM_FETCH_SIZE,
             )
-            calendar_rows = self.repo.get_calendar(req.market_codes, req.date_from, req.date_to)
-            issue_rows = self.repo.get_issues(req.date_from, req.date_to) if req.include_issues else []
+            calendar_rows = self.repo.stream_calendar(
+                req.market_codes,
+                req.date_from,
+                req.date_to,
+                fetch_size=self.STREAM_FETCH_SIZE,
+            )
+            issue_rows = (
+                self.repo.stream_issues(req.date_from, req.date_to, fetch_size=self.STREAM_FETCH_SIZE)
+                if req.include_issues
+                else ()
+            )
             self.repo.update_export_job(job_id, {"progress": 60})
 
             files = []
