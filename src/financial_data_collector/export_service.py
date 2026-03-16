@@ -30,6 +30,102 @@ class ManifestUnavailableError(RuntimeError):
 class AdjustedExportCoverageError(RuntimeError):
     pass
 
+INSTRUMENT_BASE_COLUMN_TYPES = {
+    "instrument_id": "string",
+    "external_code": "string",
+    "market_code": "string",
+    "instrument_name": "string",
+    "listing_date": "string",
+    "delisting_date": "string",
+    "trade_date": "string",
+}
+
+INSTRUMENT_MASK_COLUMN_TYPES = {
+    "has_recent_halt_or_zero_volume": "bool",
+    "has_unresolved_corporate_action": "bool",
+    "unresolved_corporate_action_types": "list[string]",
+    "unresolved_corporate_action_issues": "list[string]",
+    "is_special_trading_regime": "bool",
+    "is_tradable_for_signal": "bool",
+    "signal_validity_reason": "string",
+}
+
+BENCHMARK_DAILY_COLUMN_TYPES = {
+    "index_code": "string",
+    "index_name": "string",
+    "trade_date": "string",
+    "open": "double",
+    "high": "double",
+    "low": "double",
+    "close": "double",
+    "record_status": "string",
+}
+
+TRADING_CALENDAR_COLUMN_TYPES = {
+    "market_code": "string",
+    "trade_date": "string",
+    "is_open": "bool",
+    "holiday_name": "string",
+}
+
+DATA_QUALITY_ISSUES_COLUMN_TYPES = {
+    "dataset_name": "string",
+    "trade_date": "string",
+    "instrument_id": "string",
+    "index_code": "string",
+    "issue_code": "string",
+    "severity": "string",
+    "issue_detail": "string",
+    "run_id": "string",
+    "detected_at": "string",
+}
+
+
+def _instrument_daily_column_types(series_type: str) -> Dict[str, str]:
+    normalized = str(series_type or "raw").strip().lower()
+    if normalized == "adjusted":
+        price_columns = {
+            "open": "double",
+            "high": "double",
+            "low": "double",
+            "close": "double",
+            "volume": "double",
+        }
+    elif normalized == "both":
+        price_columns = {
+            "open": "double",
+            "high": "double",
+            "low": "double",
+            "close": "double",
+            "adj_open": "double",
+            "adj_high": "double",
+            "adj_low": "double",
+            "adj_close": "double",
+            "volume": "int64",
+            "adj_volume": "double",
+        }
+    else:
+        price_columns = {
+            "open": "double",
+            "high": "double",
+            "low": "double",
+            "close": "double",
+            "volume": "int64",
+        }
+
+    return {
+        **INSTRUMENT_BASE_COLUMN_TYPES,
+        **price_columns,
+        "turnover_value": "double",
+        "market_value": "double",
+        "is_trade_halted": "bool",
+        "is_under_supervision": "bool",
+        "record_status": "string",
+        "source_name": "string",
+        "collected_at": "string",
+        **INSTRUMENT_MASK_COLUMN_TYPES,
+    }
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -125,14 +221,30 @@ class ExportService:
             files = []
             row_counts = {}
             files.append("instrument_daily.parquet")
-            row_counts["instrument_daily"] = self.writer.write(temp_path / "instrument_daily.parquet", instrument_rows)
+            row_counts["instrument_daily"] = self.writer.write(
+                temp_path / "instrument_daily.parquet",
+                instrument_rows,
+                column_types=_instrument_daily_column_types(req.series_type),
+            )
             files.append("benchmark_daily.parquet")
-            row_counts["benchmark_daily"] = self.writer.write(temp_path / "benchmark_daily.parquet", benchmark_rows)
+            row_counts["benchmark_daily"] = self.writer.write(
+                temp_path / "benchmark_daily.parquet",
+                benchmark_rows,
+                column_types=BENCHMARK_DAILY_COLUMN_TYPES,
+            )
             files.append("trading_calendar.parquet")
-            row_counts["trading_calendar"] = self.writer.write(temp_path / "trading_calendar.parquet", calendar_rows)
+            row_counts["trading_calendar"] = self.writer.write(
+                temp_path / "trading_calendar.parquet",
+                calendar_rows,
+                column_types=TRADING_CALENDAR_COLUMN_TYPES,
+            )
             if req.include_issues:
                 files.append("data_quality_issues.parquet")
-                row_counts["data_quality_issues"] = self.writer.write(temp_path / "data_quality_issues.parquet", issue_rows)
+                row_counts["data_quality_issues"] = self.writer.write(
+                    temp_path / "data_quality_issues.parquet",
+                    issue_rows,
+                    column_types=DATA_QUALITY_ISSUES_COLUMN_TYPES,
+                )
 
             manifest = {
                 "job_id": job_id,

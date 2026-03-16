@@ -7,11 +7,12 @@ import pytest
 from financial_data_collector.api import BacktestExportAPI
 from financial_data_collector.collectors import BenchmarkCollector, DailyMarketCollector, InstrumentCollector
 from financial_data_collector.export_service import ExportRequest, ExportService
+from financial_data_collector.parquet_writer import ParquetWriter
 from financial_data_collector.runs import RunManager
 
 
 class FakeParquetWriter:
-    def write(self, path: Path, rows):
+    def write(self, path: Path, rows, **_kwargs):
         row_list = list(rows)
         path.write_text(json.dumps(row_list), encoding="utf-8")
         return len(row_list)
@@ -27,11 +28,46 @@ class CapturingParquetWriter(FakeParquetWriter):
     def __init__(self):
         self.schemas = {}
 
-    def write(self, path: Path, rows):
+    def write(self, path: Path, rows, **_kwargs):
         row_list = list(rows)
         keys = list(row_list[0].keys()) if row_list else []
         self.schemas[path.name] = keys
         return super().write(path, row_list)
+
+
+def test_real_parquet_writer_stabilizes_nullable_and_empty_list_columns(tmp_path):
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    writer = ParquetWriter()
+    out_path = tmp_path / "stable.parquet"
+    rows = [
+        {
+            "instrument_id": "i1",
+            "delisting_date": None,
+            "unresolved_corporate_action_issues": [],
+        },
+        {
+            "instrument_id": "i2",
+            "delisting_date": "2026-01-05",
+            "unresolved_corporate_action_issues": ["missing_pricing_inputs"],
+        },
+    ]
+
+    count = writer.write(
+        out_path,
+        rows,
+        batch_size=1,
+        column_types={
+            "instrument_id": "string",
+            "delisting_date": "string",
+            "unresolved_corporate_action_issues": "list[string]",
+        },
+    )
+
+    table = pq.read_table(out_path)
+    assert count == 2
+    assert table.schema.field("delisting_date").type == pa.string()
+    assert table.schema.field("unresolved_corporate_action_issues").type.value_type == pa.string()
 
 
 def _seed_data(repo):

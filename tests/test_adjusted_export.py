@@ -8,7 +8,7 @@ from financial_data_collector.export_service import ExportRequest, ExportService
 
 
 class _Writer:
-    def write(self, path, rows):
+    def write(self, path, rows, **_kwargs):
         row_list = list(rows)
         path.write_text(json.dumps(row_list), encoding="utf-8")
         return len(row_list)

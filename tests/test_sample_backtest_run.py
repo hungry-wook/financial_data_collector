@@ -5,7 +5,7 @@ from financial_data_collector.sample_backtest_run import SampleRunConfig, run_ba
 
 
 class FakeParquetWriter:
-    def write(self, path, rows):
+    def write(self, path, rows, **_kwargs):
         row_list = list(rows)
         path.write_text(json.dumps(row_list), encoding="utf-8")
         return len(row_list)
