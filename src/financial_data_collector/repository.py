@@ -1080,6 +1080,39 @@ class Repository:
             fetch_size=fetch_size,
         )
 
+    def get_recent_special_trading_markers(
+        self,
+        market_codes: Iterable[str],
+        date_before: str,
+        lookback_rows: int = 5,
+    ) -> List[Dict]:
+        codes = [str(c).upper() for c in market_codes if str(c).strip()]
+        if not codes:
+            return []
+        placeholders = ", ".join(["%s"] * len(codes))
+        return self.query(
+            f"""
+            WITH ranked AS (
+                SELECT d.instrument_id,
+                       d.trade_date,
+                       (d.is_trade_halted OR COALESCE(d.volume, 0) <= 0) AS is_special,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY d.instrument_id
+                           ORDER BY d.trade_date DESC
+                       ) AS rn
+                FROM daily_market_data d
+                JOIN instruments i ON i.instrument_id = d.instrument_id
+                WHERE i.market_code IN ({placeholders})
+                  AND d.trade_date < %s
+            )
+            SELECT instrument_id, trade_date, is_special
+            FROM ranked
+            WHERE rn <= %s
+            ORDER BY instrument_id, trade_date
+            """,
+            tuple(codes + [date_before, lookback_rows]),
+        )
+
     def get_adjustment_review_events(
         self,
         market_codes: Iterable[str],

@@ -261,7 +261,18 @@ class ExportService:
             if activation_issue:
                 unresolved_issues[instrument_id][parsed_event_date].add(activation_issue)
 
+        prior_special_rows = self.repo.get_recent_special_trading_markers(
+            market_codes=req.market_codes,
+            date_before=req.date_from,
+            lookback_rows=5,
+        )
         recent_special_by_instrument: Dict[str, Deque[bool]] = defaultdict(lambda: deque(maxlen=5))
+        for prior_row in prior_special_rows:
+            instrument_id = str(prior_row.get("instrument_id") or "")
+            if not instrument_id:
+                continue
+            recent_special_by_instrument[instrument_id].append(bool(prior_row.get("is_special")))
+
         for row in rows:
             instrument_id = str(row.get("instrument_id") or "")
             trade_date = date.fromisoformat(str(row["trade_date"]))

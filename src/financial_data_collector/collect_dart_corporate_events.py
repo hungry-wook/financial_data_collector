@@ -148,6 +148,26 @@ def _derive_legal_effective_date(event_type: str, filing: Dict, ds005_row: Dict,
     return None
 
 
+def _derive_adjustment_apply_date_with_source(
+    event_type: str,
+    filing: Dict,
+    ds005_row: Dict,
+    doc_text: str = "",
+    legal_effective_date: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    listing_like_date = _extract_listing_like_date(event_type, ds005_row)
+    if listing_like_date:
+        return listing_like_date, "listing_like_date"
+    if event_type in {"RIGHTS_ISSUE_PUBLIC", "RIGHTS_ISSUE_THIRD_PARTY"}:
+        return None, None
+    if legal_effective_date:
+        return legal_effective_date, "legal_effective_date"
+    filing_effective_date = _filing_effective_date(filing)
+    if filing_effective_date:
+        return filing_effective_date, "filing_announce_date"
+    return None, None
+
+
 def _derive_adjustment_apply_date(
     event_type: str,
     filing: Dict,
@@ -155,14 +175,14 @@ def _derive_adjustment_apply_date(
     doc_text: str = "",
     legal_effective_date: Optional[str] = None,
 ) -> Optional[str]:
-    listing_like_date = _extract_listing_like_date(event_type, ds005_row)
-    if listing_like_date:
-        return listing_like_date
-    if event_type in {"RIGHTS_ISSUE_PUBLIC", "RIGHTS_ISSUE_THIRD_PARTY"}:
-        return None
-    if legal_effective_date:
-        return legal_effective_date
-    return _filing_effective_date(filing)
+    effective_date, _source = _derive_adjustment_apply_date_with_source(
+        event_type,
+        filing,
+        ds005_row,
+        doc_text,
+        legal_effective_date=legal_effective_date,
+    )
+    return effective_date
 
 
 def _derive_effective_date(event_type: str, filing: Dict, ds005_row: Dict, doc_text: str = "") -> Optional[str]:
@@ -223,9 +243,10 @@ def _apply_activation_rules(
     ) and not direct_document_rights_rule
 
     if status == "ACTIVE" and event_type == "RIGHTS_ISSUE" and not has_ds005:
+        apply_date_source = str(payload.get("adjustment_apply_date_source") or "").strip()
         if indirect_document_rights_rule:
             return "NEEDS_REVIEW", effective_date, "missing_pricing_inputs"
-        if direct_document_rights_rule and payload.get("adjustment_apply_date"):
+        if direct_document_rights_rule and apply_date_source in {"listing_like_date", "legal_effective_date"}:
             return status, effective_date, None
         if direct_document_rights_rule:
             return "NEEDS_REVIEW", effective_date, "missing_pricing_inputs"
@@ -945,10 +966,11 @@ def collect_corporate_events(
                     }
                 )
 
+        adjustment_apply_date_source = None
         if not legal_effective_date:
             legal_effective_date = _derive_legal_effective_date(event_type, filing, ds005_row, doc_text)
         if not effective_date:
-            effective_date = _derive_adjustment_apply_date(
+            effective_date, adjustment_apply_date_source = _derive_adjustment_apply_date_with_source(
                 event_type,
                 filing,
                 ds005_row,
@@ -993,6 +1015,7 @@ def collect_corporate_events(
             )
             if split_market_effective_date:
                 effective_date = split_market_effective_date
+                adjustment_apply_date_source = "market_effective_date"
         if event_type == "CAPITAL_REDUCTION" and raw_factor is not None and raw_factor > 0:
             capital_reduction_market_effective_date = _infer_market_capital_reduction_effective_date(
                 repo=repo,
@@ -1002,6 +1025,7 @@ def collect_corporate_events(
             )
             if capital_reduction_market_effective_date:
                 effective_date = capital_reduction_market_effective_date
+                adjustment_apply_date_source = "market_effective_date"
 
         payload = dict(filing)
         payload["factor_rule"] = factor_rule
@@ -1012,6 +1036,8 @@ def collect_corporate_events(
         payload["announce_date_rule"] = "rcept_dt" if announce_date else None
         payload["legal_effective_date"] = legal_effective_date
         payload["adjustment_apply_date"] = effective_date
+        payload["adjustment_apply_date_source"] = adjustment_apply_date_source
+        payload["adjustment_apply_date_source"] = adjustment_apply_date_source
         payload["effective_date_rule"] = "adjustment_apply_date" if effective_date else None
         if split_market_effective_date:
             payload["market_effective_date"] = split_market_effective_date
@@ -1193,13 +1219,15 @@ def repair_corporate_event_timings(
             ds005_row["report_nm"] = payload.get("report_nm")
         derived_event_type = _derive_event_type(str(row.get("event_type") or ""), ds005_row, "")
         derived_legal_effective_date = _derive_legal_effective_date(derived_event_type, payload, ds005_row, "") or payload.get("legal_effective_date")
-        derived_effective_date = _derive_adjustment_apply_date(
+        derived_effective_date, derived_effective_source = _derive_adjustment_apply_date_with_source(
             derived_event_type,
             payload,
             ds005_row,
             "",
             legal_effective_date=derived_legal_effective_date,
-        ) or payload.get("adjustment_apply_date") or row.get("effective_date")
+        )
+        derived_effective_date = derived_effective_date or payload.get("adjustment_apply_date") or row.get("effective_date")
+        derived_effective_source = derived_effective_source or payload.get("adjustment_apply_date_source")
         split_market_effective_date = None
         capital_reduction_market_effective_date = None
         raw_factor = row.get("raw_factor")
@@ -1213,6 +1241,7 @@ def repair_corporate_event_timings(
             )
             if split_market_effective_date:
                 derived_effective_date = split_market_effective_date
+                derived_effective_source = "market_effective_date"
         if derived_event_type == "CAPITAL_REDUCTION" and raw_factor is not None:
             capital_reduction_market_effective_date = _infer_market_capital_reduction_effective_date(
                 repo=repo,
@@ -1222,6 +1251,7 @@ def repair_corporate_event_timings(
             )
             if capital_reduction_market_effective_date:
                 derived_effective_date = capital_reduction_market_effective_date
+                derived_effective_source = "market_effective_date"
         payload["factor_rule"] = payload.get("factor_rule")
         if split_market_effective_date:
             payload["market_effective_date"] = split_market_effective_date
@@ -1245,6 +1275,7 @@ def repair_corporate_event_timings(
             payload["derived_event_type"] = derived_event_type
         payload["repair_legal_effective_date"] = derived_legal_effective_date
         payload["repair_effective_date"] = derived_effective_date
+        payload["adjustment_apply_date_source"] = derived_effective_source
         payload["repair_status"] = new_status
         if activation_issue:
             payload["activation_issue"] = activation_issue

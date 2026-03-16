@@ -947,7 +947,7 @@ def test_collect_corporate_events_keeps_public_rights_issue_in_review_without_li
     assert rows[0]["activation_issue"] == "missing_listing_like_date"
 
 
-def test_collect_corporate_events_activates_document_only_rights_issue_with_listing_date(repo):
+def test_collect_corporate_events_keeps_document_only_rights_issue_in_review_without_verified_apply_date(repo):
     _seed_instrument(repo)
 
     out = collect_corporate_events(
@@ -960,12 +960,13 @@ def test_collect_corporate_events_activates_document_only_rights_issue_with_list
 
     assert out["events_upserted"] == 1
     rows = repo.query(
-        "SELECT status, effective_date, payload->>'activation_issue' AS activation_issue, raw_factor FROM corporate_events WHERE source_event_id = %s",
+        "SELECT status, effective_date, payload->>'activation_issue' AS activation_issue, payload->>'adjustment_apply_date_source' AS adjustment_apply_date_source, raw_factor FROM corporate_events WHERE source_event_id = %s",
         ("20260308000010",),
     )
-    assert rows[0]["status"] == "ACTIVE"
+    assert rows[0]["status"] == "NEEDS_REVIEW"
     assert rows[0]["effective_date"] == "2026-03-08"
-    assert rows[0]["activation_issue"] is None
+    assert rows[0]["activation_issue"] == "missing_pricing_inputs"
+    assert rows[0]["adjustment_apply_date_source"] == "filing_announce_date"
     assert float(rows[0]["raw_factor"]) == 0.9
 
 
@@ -1198,6 +1199,43 @@ def test_repair_corporate_event_timings_blocks_document_only_rights_issue_withou
     row = repo.query("SELECT status, payload->>'activation_issue' AS activation_issue FROM corporate_events WHERE source_event_id = %s", ("doconly1",))[0]
     assert row["status"] == "NEEDS_REVIEW"
     assert row["activation_issue"] == "missing_pricing_inputs"
+
+
+def test_apply_activation_rules_accepts_rights_issue_with_verified_apply_date_source():
+    status, effective_date, activation_issue = _apply_activation_rules(
+        event_type="RIGHTS_ISSUE",
+        status="ACTIVE",
+        effective_date="2026-03-20",
+        ds005_row={},
+        payload={
+            "factor_rule": "rights_issue_section1_3",
+            "adjustment_apply_date": "2026-03-20",
+            "adjustment_apply_date_source": "legal_effective_date",
+        },
+    )
+
+    assert status == "ACTIVE"
+    assert effective_date == "2026-03-20"
+    assert activation_issue is None
+
+
+
+def test_apply_activation_rules_blocks_rights_issue_when_apply_date_falls_back_to_filing_date():
+    status, effective_date, activation_issue = _apply_activation_rules(
+        event_type="RIGHTS_ISSUE",
+        status="ACTIVE",
+        effective_date="2026-03-08",
+        ds005_row={},
+        payload={
+            "factor_rule": "rights_issue_section1_3",
+            "adjustment_apply_date": "2026-03-08",
+            "adjustment_apply_date_source": "filing_announce_date",
+        },
+    )
+
+    assert status == "NEEDS_REVIEW"
+    assert effective_date == "2026-03-08"
+    assert activation_issue == "missing_pricing_inputs"
 
 
 def test_collect_corporate_events_stores_legal_and_apply_dates(repo):
