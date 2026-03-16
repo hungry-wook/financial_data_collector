@@ -1,9 +1,11 @@
 import shutil
+from collections import defaultdict
+from collections import deque
 from dataclasses import asdict
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Deque, Dict, Iterable, List, Optional
 from uuid import uuid4
 
 from .adjustment_service import AdjustmentService
@@ -89,13 +91,16 @@ class ExportService:
 
         try:
             self._assert_adjusted_factor_coverage(req)
-            instrument_rows = self.repo.stream_core_market(
-                req.market_codes,
-                req.date_from,
-                req.date_to,
-                series_type=req.series_type,
-                as_of_timestamp=req.as_of_timestamp,
-                fetch_size=self.STREAM_FETCH_SIZE,
+            instrument_rows = self._decorate_instrument_rows(
+                req,
+                self.repo.stream_core_market(
+                    req.market_codes,
+                    req.date_from,
+                    req.date_to,
+                    series_type=req.series_type,
+                    as_of_timestamp=req.as_of_timestamp,
+                    fetch_size=self.STREAM_FETCH_SIZE,
+                ),
             )
             benchmark_rows = self.repo.stream_benchmark(
                 req.index_codes,
@@ -232,6 +237,69 @@ class ExportService:
         raise AdjustedExportCoverageError(
             f"adjusted export requires materialized factors for all eligible rows; missing coverage for {len(missing)} instrument(s): {preview}"
         )
+
+    def _decorate_instrument_rows(self, req: ExportRequest, rows: Iterable[Dict]) -> Iterable[Dict]:
+        review_events = self.repo.get_adjustment_review_events(
+            market_codes=req.market_codes,
+            date_from=req.date_from,
+            date_to=req.date_to,
+        )
+        unresolved_dates: Dict[str, set[date]] = defaultdict(set)
+        unresolved_types: Dict[str, Dict[date, set[str]]] = defaultdict(lambda: defaultdict(set))
+        unresolved_issues: Dict[str, Dict[date, set[str]]] = defaultdict(lambda: defaultdict(set))
+        for event in review_events:
+            instrument_id = str(event.get("instrument_id") or "")
+            event_date = str(event.get("event_date") or "")
+            if not instrument_id or not event_date:
+                continue
+            parsed_event_date = date.fromisoformat(event_date)
+            unresolved_dates[instrument_id].add(parsed_event_date)
+            event_type = str(event.get("event_type") or "").strip()
+            if event_type:
+                unresolved_types[instrument_id][parsed_event_date].add(event_type)
+            activation_issue = str(event.get("activation_issue") or "").strip()
+            if activation_issue:
+                unresolved_issues[instrument_id][parsed_event_date].add(activation_issue)
+
+        recent_special_by_instrument: Dict[str, Deque[bool]] = defaultdict(lambda: deque(maxlen=5))
+        for row in rows:
+            instrument_id = str(row.get("instrument_id") or "")
+            trade_date = date.fromisoformat(str(row["trade_date"]))
+            recent_markers = recent_special_by_instrument[instrument_id]
+            has_recent_halt_or_zero_volume = any(recent_markers)
+            current_volume = row.get("volume")
+            current_volume_value = float(current_volume or 0)
+            current_special = bool(row.get("is_trade_halted")) or current_volume_value <= 0
+            event_dates = unresolved_dates.get(instrument_id, set())
+            nearby_dates = sorted(d for d in event_dates if abs((trade_date - d).days) <= 5)
+            has_unresolved_corporate_action = bool(nearby_dates)
+            unresolved_event_types = sorted({etype for d in nearby_dates for etype in unresolved_types[instrument_id].get(d, set())})
+            unresolved_activation_issues = sorted({issue for d in nearby_dates for issue in unresolved_issues[instrument_id].get(d, set())})
+            is_special_trading_regime = current_special or has_recent_halt_or_zero_volume
+
+            reasons = []
+            if row.get("record_status") != "VALID":
+                reasons.append("invalid_record")
+            if bool(row.get("is_under_supervision")):
+                reasons.append("under_supervision")
+            if current_special:
+                reasons.append("current_halt_or_zero_volume")
+            elif has_recent_halt_or_zero_volume:
+                reasons.append("recent_halt_or_zero_volume")
+            if has_unresolved_corporate_action:
+                reasons.append("unresolved_corporate_action")
+
+            decorated = dict(row)
+            decorated["has_recent_halt_or_zero_volume"] = has_recent_halt_or_zero_volume
+            decorated["has_unresolved_corporate_action"] = has_unresolved_corporate_action
+            decorated["unresolved_corporate_action_types"] = unresolved_event_types
+            decorated["unresolved_corporate_action_issues"] = unresolved_activation_issues
+            decorated["is_special_trading_regime"] = is_special_trading_regime
+            decorated["is_tradable_for_signal"] = len(reasons) == 0
+            decorated["signal_validity_reason"] = "OK" if not reasons else ",".join(reasons)
+            yield decorated
+
+            recent_markers.append(current_special)
 
     @staticmethod
     def _validate_request(req: ExportRequest) -> None:

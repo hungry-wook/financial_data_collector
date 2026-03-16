@@ -256,7 +256,124 @@ def test_parquet_schema_snapshot_instrument_daily(repo, tmp_path):
         "record_status",
         "source_name",
         "collected_at",
+        "has_recent_halt_or_zero_volume",
+        "has_unresolved_corporate_action",
+        "unresolved_corporate_action_types",
+        "unresolved_corporate_action_issues",
+        "is_special_trading_regime",
+        "is_tradable_for_signal",
+        "signal_validity_reason",
     ]
+
+
+def test_export_service_marks_signal_validity_without_dropping_rows(repo, tmp_path):
+    InstrumentCollector(repo).collect(
+        [
+            {
+                "instrument_id": "550e8400-e29b-41d4-a716-446655440099",
+                "external_code": "700001",
+                "market_code": "KOSDAQ",
+                "instrument_name": "Mask Sample",
+                "listing_date": date(2020, 1, 1),
+            }
+        ],
+        "krx",
+    )
+    DailyMarketCollector(repo).collect(
+        [
+            {
+                "instrument_id": "550e8400-e29b-41d4-a716-446655440099",
+                "trade_date": date(2026, 1, 2),
+                "open": 100,
+                "high": 100,
+                "low": 100,
+                "close": 100,
+                "volume": 0,
+                "turnover_value": 0,
+                "market_value": 1000,
+            },
+            {
+                "instrument_id": "550e8400-e29b-41d4-a716-446655440099",
+                "trade_date": date(2026, 1, 3),
+                "open": 90,
+                "high": 91,
+                "low": 89,
+                "close": 90,
+                "volume": 100,
+                "turnover_value": 9000,
+                "market_value": 900,
+            },
+            {
+                "instrument_id": "550e8400-e29b-41d4-a716-446655440099",
+                "trade_date": date(2026, 1, 4),
+                "open": 92,
+                "high": 93,
+                "low": 91,
+                "close": 92,
+                "volume": 100,
+                "turnover_value": 9200,
+                "market_value": 920,
+            },
+        ],
+        "krx",
+        "r_mask",
+    )
+    BenchmarkCollector(repo).collect(
+        [{"index_code": "KOSDAQ", "trade_date": date(2026, 1, 2), "open": 100, "high": 101, "low": 99, "close": 100.5}],
+        "krx",
+        "r_mask",
+    )
+    repo.upsert_trading_calendar(
+        [
+            {"market_code": "KOSDAQ", "trade_date": "2026-01-02", "is_open": True, "holiday_name": None, "source_name": "krx", "collected_at": "2026-01-02T00:00:00", "run_id": None},
+            {"market_code": "KOSDAQ", "trade_date": "2026-01-03", "is_open": True, "holiday_name": None, "source_name": "krx", "collected_at": "2026-01-03T00:00:00", "run_id": None},
+            {"market_code": "KOSDAQ", "trade_date": "2026-01-04", "is_open": True, "holiday_name": None, "source_name": "krx", "collected_at": "2026-01-04T00:00:00", "run_id": None},
+        ]
+    )
+    repo.upsert_corporate_events(
+        [
+            {
+                "event_id": "evt_mask_review",
+                "event_version": 1,
+                "instrument_id": "550e8400-e29b-41d4-a716-446655440099",
+                "event_type": "RIGHTS_ISSUE",
+                "announce_date": "2026-01-04",
+                "effective_date": "2026-01-04",
+                "source_event_id": "mask_review_1",
+                "source_name": "opendart",
+                "collected_at": "2026-01-04T00:00:00Z",
+                "raw_factor": 0.8,
+                "confidence": "LOW",
+                "status": "NEEDS_REVIEW",
+                "payload": {"activation_issue": "missing_pricing_inputs", "factor_rule": "rights_issue_section1_3"},
+            }
+        ]
+    )
+
+    svc = ExportService(repo, writer=FakeParquetWriter())
+    created = svc.create_job(
+        ExportRequest(
+            market_codes=["KOSDAQ"],
+            index_codes=["KOSDAQ"],
+            date_from="2026-01-02",
+            date_to="2026-01-04",
+            include_issues=False,
+            output_format="parquet",
+            output_path=(tmp_path / "out_mask").as_posix(),
+        )
+    )
+    svc.run_job(created["job_id"])
+
+    rows = json.loads((tmp_path / "out_mask" / "instrument_daily.parquet").read_text(encoding="utf-8"))
+    assert len(rows) == 3
+    by_date = {row["trade_date"]: row for row in rows}
+    assert by_date["2026-01-02"]["is_tradable_for_signal"] is False
+    assert by_date["2026-01-02"]["signal_validity_reason"] == "current_halt_or_zero_volume,unresolved_corporate_action"
+    assert by_date["2026-01-03"]["has_recent_halt_or_zero_volume"] is True
+    assert by_date["2026-01-03"]["is_special_trading_regime"] is True
+    assert by_date["2026-01-04"]["has_unresolved_corporate_action"] is True
+    assert by_date["2026-01-04"]["unresolved_corporate_action_types"] == ["RIGHTS_ISSUE"]
+    assert by_date["2026-01-04"]["unresolved_corporate_action_issues"] == ["missing_pricing_inputs"]
 
 
 def test_parquet_schema_snapshot_benchmark_daily(repo, tmp_path):

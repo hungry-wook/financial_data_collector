@@ -1080,6 +1080,39 @@ class Repository:
             fetch_size=fetch_size,
         )
 
+    def get_adjustment_review_events(
+        self,
+        market_codes: Iterable[str],
+        date_from: str,
+        date_to: str,
+        lookaround_days: int = 5,
+    ) -> List[Dict]:
+        codes = [str(c).upper() for c in market_codes if str(c).strip()]
+        if not codes:
+            return []
+        placeholders = ", ".join(["%s"] * len(codes))
+        return self.query(
+            f"""
+            SELECT e.instrument_id,
+                   i.external_code,
+                   i.market_code,
+                   COALESCE(e.effective_date, e.announce_date) AS event_date,
+                   e.event_type,
+                   e.status,
+                   e.payload->>'activation_issue' AS activation_issue,
+                   e.payload->>'factor_rule' AS factor_rule
+            FROM corporate_events e
+            JOIN instruments i ON i.instrument_id = e.instrument_id
+            WHERE i.market_code IN ({placeholders})
+              AND e.status = 'NEEDS_REVIEW'
+              AND COALESCE(e.effective_date, e.announce_date)
+                  BETWEEN (%s::date - (%s * INTERVAL '1 day'))
+                      AND (%s::date + (%s * INTERVAL '1 day'))
+            ORDER BY e.instrument_id, event_date, e.event_type
+            """,
+            tuple(codes + [date_from, lookaround_days, date_to, lookaround_days]),
+        )
+
     def get_adjustment_factor_gaps(
         self,
         market_codes: Iterable[str],
