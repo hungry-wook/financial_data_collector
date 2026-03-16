@@ -213,14 +213,28 @@ def _apply_activation_rules(
     factor_rule = str(payload.get("factor_rule") or "")
     has_ds005 = bool(ds005_row) and any(k != "report_nm" for k in ds005_row.keys())
 
+    direct_document_rights_rule = any(
+        factor_rule == rule
+        for rule in {"rights_issue_share_count", "rights_issue_keyword_sections", "rights_issue_section1_3"}
+    )
+    indirect_document_rights_rule = any(
+        factor_rule.endswith(f"_{rule}")
+        for rule in {"rights_issue_share_count", "rights_issue_keyword_sections", "rights_issue_section1_3"}
+    ) and not direct_document_rights_rule
+
+    if status == "ACTIVE" and event_type == "RIGHTS_ISSUE" and not has_ds005:
+        if indirect_document_rights_rule:
+            return "NEEDS_REVIEW", effective_date, "missing_pricing_inputs"
+        if direct_document_rights_rule and payload.get("adjustment_apply_date"):
+            return status, effective_date, None
+        if direct_document_rights_rule:
+            return "NEEDS_REVIEW", effective_date, "missing_pricing_inputs"
+
     if (
         status == "ACTIVE"
-        and event_type in {"RIGHTS_ISSUE", "RIGHTS_BONUS_ISSUE", "RIGHTS_ISSUE_SHAREHOLDER"}
+        and event_type in {"RIGHTS_BONUS_ISSUE", "RIGHTS_ISSUE_SHAREHOLDER"}
         and not has_ds005
-        and any(
-            factor_rule == rule or factor_rule.endswith(f"_{rule}")
-            for rule in {"rights_issue_share_count", "rights_issue_keyword_sections", "rights_issue_section1_3"}
-        )
+        and (direct_document_rights_rule or indirect_document_rights_rule)
     ):
         return "NEEDS_REVIEW", effective_date, "missing_pricing_inputs"
 

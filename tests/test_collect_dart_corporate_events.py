@@ -947,7 +947,7 @@ def test_collect_corporate_events_keeps_public_rights_issue_in_review_without_li
     assert rows[0]["activation_issue"] == "missing_listing_like_date"
 
 
-def test_collect_corporate_events_keeps_document_only_rights_issue_in_review_without_ds005_inputs(repo):
+def test_collect_corporate_events_activates_document_only_rights_issue_with_listing_date(repo):
     _seed_instrument(repo)
 
     out = collect_corporate_events(
@@ -960,11 +960,12 @@ def test_collect_corporate_events_keeps_document_only_rights_issue_in_review_wit
 
     assert out["events_upserted"] == 1
     rows = repo.query(
-        "SELECT status, payload->>'activation_issue' AS activation_issue, raw_factor FROM corporate_events WHERE source_event_id = %s",
+        "SELECT status, effective_date, payload->>'activation_issue' AS activation_issue, raw_factor FROM corporate_events WHERE source_event_id = %s",
         ("20260308000010",),
     )
-    assert rows[0]["status"] == "NEEDS_REVIEW"
-    assert rows[0]["activation_issue"] == "missing_pricing_inputs"
+    assert rows[0]["status"] == "ACTIVE"
+    assert rows[0]["effective_date"] == "2026-03-08"
+    assert rows[0]["activation_issue"] is None
     assert float(rows[0]["raw_factor"]) == 0.9
 
 
