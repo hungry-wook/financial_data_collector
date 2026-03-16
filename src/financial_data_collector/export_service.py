@@ -265,6 +265,7 @@ class ExportService:
             market_codes=req.market_codes,
             date_before=req.date_from,
             lookback_rows=5,
+            lookback_days=10,
         )
         recent_special_by_instrument: Dict[str, Deque[bool]] = defaultdict(lambda: deque(maxlen=5))
         for prior_row in prior_special_rows:

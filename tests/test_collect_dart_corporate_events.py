@@ -1238,6 +1238,69 @@ def test_apply_activation_rules_blocks_rights_issue_when_apply_date_falls_back_t
     assert activation_issue == "missing_pricing_inputs"
 
 
+def test_repair_corporate_event_timings_uses_apply_date_source_for_rights_issue_activation(repo):
+    _seed_instrument(repo)
+    instrument_id = repo.get_instrument_id_by_external_code("123456", market_code="KOSDAQ")
+    assert instrument_id
+    repo.upsert_corporate_events([
+        {
+            "event_id": "evt_rights_repair_verified",
+            "event_version": 1,
+            "instrument_id": instrument_id,
+            "event_type": "RIGHTS_ISSUE",
+            "announce_date": "2026-02-10",
+            "effective_date": "2026-02-10",
+            "source_event_id": "rights-repair-verified",
+            "source_name": "opendart",
+            "collected_at": "2026-02-10T00:00:00Z",
+            "raw_factor": 0.9,
+            "confidence": "MEDIUM",
+            "status": "ACTIVE",
+            "payload": {
+                "factor_rule": "rights_issue_section1_3",
+                "legal_effective_date": "2026-03-20",
+                "adjustment_apply_date": "2026-03-20",
+                "adjustment_apply_date_source": "legal_effective_date",
+            },
+        },
+        {
+            "event_id": "evt_rights_repair_filing",
+            "event_version": 1,
+            "instrument_id": instrument_id,
+            "event_type": "RIGHTS_ISSUE",
+            "announce_date": "2026-02-11",
+            "effective_date": "2026-02-11",
+            "source_event_id": "rights-repair-filing",
+            "source_name": "opendart",
+            "collected_at": "2026-02-11T00:00:00Z",
+            "raw_factor": 0.9,
+            "confidence": "MEDIUM",
+            "status": "ACTIVE",
+            "payload": {
+                "factor_rule": "rights_issue_section1_3",
+                "adjustment_apply_date": "2026-02-11",
+                "adjustment_apply_date_source": "filing_announce_date",
+            },
+        },
+    ])
+
+    out = repair_corporate_event_timings(repo, "2026-02-01", "2026-03-31")
+    assert out["upserted"] >= 2
+
+    rows = repo.query(
+        "SELECT source_event_id, status, payload->>'activation_issue' AS activation_issue, payload->>'adjustment_apply_date_source' AS adjustment_apply_date_source FROM corporate_events WHERE source_event_id IN (%s, %s) ORDER BY source_event_id",
+        ("rights-repair-filing", "rights-repair-verified"),
+    )
+    assert rows[0]["source_event_id"] == "rights-repair-filing"
+    assert rows[0]["status"] == "NEEDS_REVIEW"
+    assert rows[0]["activation_issue"] == "missing_pricing_inputs"
+    assert rows[0]["adjustment_apply_date_source"] == "filing_announce_date"
+    assert rows[1]["source_event_id"] == "rights-repair-verified"
+    assert rows[1]["status"] == "ACTIVE"
+    assert rows[1]["activation_issue"] is None
+    assert rows[1]["adjustment_apply_date_source"] == "legal_effective_date"
+
+
 def test_collect_corporate_events_stores_legal_and_apply_dates(repo):
     _seed_instrument(repo)
 

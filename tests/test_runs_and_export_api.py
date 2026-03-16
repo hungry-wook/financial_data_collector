@@ -449,6 +449,79 @@ def test_export_service_marks_recent_halt_before_window_start(repo, tmp_path):
     assert rows[0]["signal_validity_reason"] == "recent_halt_or_zero_volume"
 
 
+def test_export_service_does_not_mark_stale_pre_window_halt_as_recent(repo, tmp_path):
+    InstrumentCollector(repo).collect(
+        [
+            {
+                "instrument_id": "550e8400-e29b-41d4-a716-446655440097",
+                "external_code": "700003",
+                "market_code": "KOSDAQ",
+                "instrument_name": "Stale Halt Sample",
+                "listing_date": date(2020, 1, 1),
+            }
+        ],
+        "krx",
+    )
+    DailyMarketCollector(repo).collect(
+        [
+            {
+                "instrument_id": "550e8400-e29b-41d4-a716-446655440097",
+                "trade_date": date(2025, 12, 1),
+                "open": 100,
+                "high": 100,
+                "low": 100,
+                "close": 100,
+                "volume": 0,
+                "turnover_value": 0,
+                "market_value": 1000,
+            },
+            {
+                "instrument_id": "550e8400-e29b-41d4-a716-446655440097",
+                "trade_date": date(2026, 1, 3),
+                "open": 90,
+                "high": 91,
+                "low": 89,
+                "close": 90,
+                "volume": 100,
+                "turnover_value": 9000,
+                "market_value": 900,
+            },
+        ],
+        "krx",
+        "r_stale",
+    )
+    BenchmarkCollector(repo).collect(
+        [{"index_code": "KOSDAQ", "trade_date": date(2026, 1, 3), "open": 100, "high": 101, "low": 99, "close": 100.5}],
+        "krx",
+        "r_stale",
+    )
+    repo.upsert_trading_calendar(
+        [
+            {"market_code": "KOSDAQ", "trade_date": "2026-01-03", "is_open": True, "holiday_name": None, "source_name": "krx", "collected_at": "2026-01-03T00:00:00", "run_id": None},
+        ]
+    )
+
+    svc = ExportService(repo, writer=FakeParquetWriter())
+    created = svc.create_job(
+        ExportRequest(
+            market_codes=["KOSDAQ"],
+            index_codes=["KOSDAQ"],
+            date_from="2026-01-03",
+            date_to="2026-01-03",
+            include_issues=False,
+            output_format="parquet",
+            output_path=(tmp_path / "out_stale_boundary").as_posix(),
+        )
+    )
+    svc.run_job(created["job_id"])
+
+    rows = json.loads((tmp_path / "out_stale_boundary" / "instrument_daily.parquet").read_text(encoding="utf-8"))
+    assert len(rows) == 1
+    assert rows[0]["has_recent_halt_or_zero_volume"] is False
+    assert rows[0]["is_tradable_for_signal"] is True
+    assert rows[0]["signal_validity_reason"] == "OK"
+
+
 def test_parquet_schema_snapshot_benchmark_daily(repo, tmp_path):
     _seed_data(repo)
     writer = CapturingParquetWriter()

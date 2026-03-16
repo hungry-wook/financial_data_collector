@@ -1085,6 +1085,7 @@ class Repository:
         market_codes: Iterable[str],
         date_before: str,
         lookback_rows: int = 5,
+        lookback_days: int = 10,
     ) -> List[Dict]:
         codes = [str(c).upper() for c in market_codes if str(c).strip()]
         if not codes:
@@ -1104,13 +1105,14 @@ class Repository:
                 JOIN instruments i ON i.instrument_id = d.instrument_id
                 WHERE i.market_code IN ({placeholders})
                   AND d.trade_date < %s
+                  AND d.trade_date >= (%s::date - (%s * INTERVAL '1 day'))
             )
             SELECT instrument_id, trade_date, is_special
             FROM ranked
             WHERE rn <= %s
             ORDER BY instrument_id, trade_date
             """,
-            tuple(codes + [date_before, lookback_rows]),
+            tuple(codes + [date_before, date_before, lookback_days, lookback_rows]),
         )
 
     def get_adjustment_review_events(

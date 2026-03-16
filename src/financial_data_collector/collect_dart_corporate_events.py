@@ -1257,6 +1257,7 @@ def repair_corporate_event_timings(
             payload["market_effective_date"] = split_market_effective_date
         if capital_reduction_market_effective_date:
             payload["market_effective_date"] = capital_reduction_market_effective_date
+        payload["adjustment_apply_date_source"] = derived_effective_source
         new_status, derived_effective_date, activation_issue = _apply_activation_rules(
             event_type=derived_event_type,
             status=str(row.get("status") or "NEEDS_REVIEW"),
