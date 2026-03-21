@@ -1,291 +1,111 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>KRX 데이터 수집 현황</title>
+<title>KRX Swing Backtest Browser</title>
 <link rel="stylesheet" href="/dashboard/assets/dashboard.css">
 <script src="/dashboard/assets/dashboard.js" defer></script>
-<script src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js" defer></script>
-<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.0.2/dist/lightweight-charts.standalone.production.js"></script>
 </head>
-<body x-data="dashboard()" x-init="init()" x-cloak>
-
+<body>
 <header>
-  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-  </svg>
-  <h1>KRX 데이터 수집 현황</h1>
-  <span x-text="'갱신: ' + lastRefresh"></span>
+  <h1>KRX Swing Backtest Browser</h1>
+  <p>?? ??? ??? ?? ????? ?? ?????.</p>
 </header>
 
-<nav>
-  <template x-for="tab in tabs" :key="tab.id">
-    <button :class="{'active': activeTab === tab.id}" @click="switchTab(tab.id)" x-text="tab.label"></button>
-  </template>
-</nav>
+<main class="browser-shell">
+  <section class="section">
+    <h2>??</h2>
+    <div id="summary" class="cards"></div>
+  </section>
 
-<main>
-  <div x-show="activeTab === 'overview'">
-    <div class="cards">
-      <div class="card">
-        <div class="label">종목 수</div>
-        <div class="value" x-text="fmt(summary.instrument_count ?? '-')"></div>
-      </div>
-      <div class="card">
-        <div class="label">일별 시세 건수</div>
-        <div class="value" x-text="fmt(summary.price_count ?? '-')"></div>
-        <div class="sub" x-text="summary.price_date_from ? summary.price_date_from + ' ~ ' + summary.price_date_to : ''"></div>
-      </div>
-      <div class="card">
-        <div class="label">벤치마크 건수</div>
-        <div class="value" x-text="fmt(summary.benchmark_count ?? '-')"></div>
-        <div class="sub" x-text="summary.benchmark_date_from ? summary.benchmark_date_from + ' ~ ' + summary.benchmark_date_to : ''"></div>
-      </div>
-      <div class="card">
-        <div class="label">거래일 수</div>
-        <div class="value" x-text="fmt(summary.trading_days ?? '-')"></div>
-      </div>
-      <div class="card">
-        <div class="label">미해결 이슈</div>
-        <div class="value" :style="summary.open_issues > 0 ? 'color:#c53030' : ''" x-text="fmt(summary.open_issues ?? '-')"></div>
-      </div>
+  <section class="section">
+    <h2>?? ??</h2>
+    <div class="controls">
+      <input id="searchInput" type="text" placeholder="???? ?? ???">
+      <select id="statusSelect">
+        <option value="">??</option>
+        <option value="listed">??</option>
+        <option value="delisted">??</option>
+      </select>
+      <button id="searchButton" type="button">??</button>
     </div>
-
-    <div class="section">
-      <h2>최근 수집 이력</h2>
-      <div class="controls">
-        <select x-model="runPipelineFilter" @change="loadRuns()">
-          <option value="">전체 파이프라인</option>
-          <option value="collect-dart-corporate-events">DART corporate events</option>
-          <option value="phase1">KRX phase1</option>
-          <option value="collect-dart-events">DART filings</option>
-          <option value="phase1-collect-delisting-kind">KIND delisting</option>
-        </select>
-        <select x-model="runSourceFilter" @change="loadRuns()">
-          <option value="">전체 소스</option>
-          <option value="opendart">opendart</option>
-          <option value="krx">krx</option>
-          <option value="kind">kind</option>
-        </select>
-        <select x-model="runStatusFilter" @change="loadRuns()">
-          <option value="">전체 상태</option>
-          <option value="SUCCESS">SUCCESS</option>
-          <option value="PARTIAL">PARTIAL</option>
-          <option value="FAILED">FAILED</option>
-          <option value="RUNNING">RUNNING</option>
-        </select>
-      </div>
-      <div class="cards subcards">
-        <div class="card compact"><div class="label">DART Run</div><div class="value small" x-text="fmt(dartRunSummary().total)"></div></div>
-        <div class="card compact"><div class="label">Rebuild OK</div><div class="value small" x-text="fmt(dartRunSummary().succeeded)"></div></div>
-        <div class="card compact"><div class="label">Rebuild Skip</div><div class="value small" x-text="fmt(dartRunSummary().skipped)"></div></div>
-        <div class="card compact"><div class="label">Failed</div><div class="value small" x-text="fmt(dartRunSummary().failed)"></div></div>
-      </div>
-      <div x-show="runsLoading" class="loading">로딩 중...</div>
-      <div x-show="!runsLoading && runs.length === 0" class="empty">수집 이력이 없습니다</div>
-      <table x-show="!runsLoading && runs.length > 0">
+    <div class="table-wrap">
+      <table>
         <thead>
           <tr>
-            <th>파이프라인</th><th>소스</th><th>기간</th><th>상태</th>
-            <th>시작시각</th><th>소요(초)</th><th>성공</th><th>실패</th><th>경고</th><th>Details</th>
+            <th>??</th>
+            <th>???</th>
+            <th>??</th>
+            <th>??</th>
+            <th>???</th>
+            <th>???</th>
           </tr>
         </thead>
-        <tbody>
-          <template x-for="r in runs" :key="r.run_id">
-            <template>
-              <tr>
-                <td x-text="r.pipeline_name"></td>
-                <td x-text="r.source_name"></td>
-                <td x-text="r.window_start + ' ~ ' + r.window_end"></td>
-                <td><span :class="statusBadge(r.status)" x-text="r.status"></span></td>
-                <td x-text="r.started_at ? r.started_at.slice(0,19) : ''"></td>
-                <td x-text="elapsed(r.started_at, r.finished_at)"></td>
-                <td x-text="r.success_count"></td>
-                <td x-text="r.failure_count"></td>
-                <td x-text="r.warning_count"></td>
-                <td>
-                  <div class="run-detail-cell">
-                    <div class="run-meta-summary" x-text="runMetadataSummary(r)"></div>
-                    <button class="link-btn" x-show="r.metadata" @click="toggleRunDetails(r.run_id)" x-text="isRunExpanded(r.run_id) ? 'hide' : 'show'"></button>
-                  </div>
-                </td>
-              </tr>
-              <tr x-show="isRunExpanded(r.run_id) && r.metadata" class="run-detail-row">
-                <td colspan="10">
-                  <div class="run-meta-grid">
-                    <template x-for="entry in metadataEntries(r.metadata)" :key="r.run_id + ':' + entry.key">
-                      <div class="run-meta-item">
-                        <div class="run-meta-key" x-text="entry.key"></div>
-                        <div class="run-meta-value" x-text="entry.value"></div>
-                      </div>
-                    </template>
-                  </div>
-                </td>
-              </tr>
-            </template>
-          </template>
+        <tbody id="instrumentRows">
+          <tr><td colspan="6">?? ?...</td></tr>
         </tbody>
       </table>
     </div>
-  </div>
+  </section>
 
-  <div x-show="activeTab === 'instruments'">
-    <div class="section">
-      <h2>종목 선택</h2>
-      <div class="controls">
-        <input x-model="instrumentQuery" @input="onInstrumentQueryInput()" @keyup.enter="searchInstrumentOptions()" placeholder="종목코드 또는 종목명 검색" style="width:300px">
-        <button @click="searchInstrumentOptions()">검색</button>
-      </div>
-      <div x-show="optionLoading" class="loading">종목 검색 중...</div>
-      <div x-show="!optionLoading && instrumentOptions.length === 0" class="empty">검색된 종목이 없습니다</div>
-      <div class="picker-list" x-show="!optionLoading && instrumentOptions.length > 0">
-        <template x-for="opt in instrumentOptions" :key="opt.market_code + ':' + opt.external_code">
-          <button class="picker-item"
-                  :class="selectedInstrument && selectedInstrument.market_code === opt.market_code && selectedInstrument.external_code === opt.external_code ? 'selected' : ''"
-                  @click="selectInstrument(opt)">
-            <span class="picker-code" x-text="opt.external_code"></span>
-            <span x-text="opt.instrument_name"></span>
-            <span class="picker-market" x-text="opt.market_code"></span>
-          </button>
-        </template>
-      </div>
-      <div class="controls" x-show="!optionLoading && instrumentOptions.length > 0">
-        <span x-text="'표시: ' + fmt(instrumentOptions.length) + ' / ' + fmt(instrumentTotal)"></span>
-        <button @click="loadMoreInstrumentOptions()" x-show="instrumentHasMore">더보기</button>
-      </div>
+  <section class="section">
+    <h2>?? ??</h2>
+    <div id="instrumentProfile" class="cards"></div>
+    <div class="controls compact-top">
+      <input id="fromInput" type="date">
+      <input id="toInput" type="date">
+      <button id="priceButton" type="button">?? ??</button>
     </div>
-
-    <div class="section" x-show="selectedInstrument">
-      <h2>기본정보</h2>
-      <div class="profile-grid">
-        <div class="card compact"><div class="label">코드</div><div class="value small" x-text="instrumentProfile?.external_code ?? selectedInstrument?.external_code"></div></div>
-        <div class="card compact"><div class="label">종목명</div><div class="value small" x-text="instrumentProfile?.instrument_name ?? selectedInstrument?.instrument_name"></div></div>
-        <div class="card compact"><div class="label">시장</div><div class="value small" x-text="instrumentProfile?.market_code ?? selectedInstrument?.market_code"></div></div>
-        <div class="card compact"><div class="label">상장상태</div><div class="value small" x-text="instrumentProfile?.listed_status === 'delisted' ? '상장폐지' : '상장'"></div></div>
-        <div class="card compact"><div class="label">그룹</div><div class="value small" x-text="instrumentProfile?.security_group ?? '-'"></div></div>
-        <div class="card compact"><div class="label">섹터</div><div class="value small" x-text="instrumentProfile?.sector_name ?? '-'"></div></div>
-        <div class="card compact"><div class="label">상장일</div><div class="value small" x-text="instrumentProfile?.listing_date ?? '-'"></div></div>
-        <div class="card compact"><div class="label">상폐일</div><div class="value small" x-text="instrumentProfile?.delisting_date ?? '-'"></div></div>
-      </div>
-    </div>
-
-    <div class="section" x-show="selectedInstrument">
-      <h2>일별 캔들 차트</h2>
-      <div class="ma-panel">
-        <div class="ma-group">
-          <div class="ma-label">가격 MA</div>
-          <div class="ma-controls">
-            <button class="ghost-btn" @click="addPriceMA(5)">+5</button>
-            <button class="ghost-btn" @click="addPriceMA(20)">+20</button>
-            <input type="number" min="2" max="240" x-model="priceMAInput" placeholder="기간(2~240)">
-            <button @click="addPriceMAInput()">추가</button>
-          </div>
-          <div class="ma-chips">
-            <template x-for="period in priceMAPeriods" :key="'price-ma-' + period">
-              <button class="ma-chip" @click="removePriceMA(period)">
-                <span x-text="'SMA ' + period"></span>
-                <strong>×</strong>
-              </button>
-            </template>
-          </div>
-        </div>
-        <div class="ma-group">
-          <div class="ma-label">거래량 MA</div>
-          <div class="ma-controls">
-            <button class="ghost-btn" @click="addVolumeMA(5)">+5</button>
-            <button class="ghost-btn" @click="addVolumeMA(20)">+20</button>
-            <input type="number" min="2" max="240" x-model="volumeMAInput" placeholder="기간(2~240)">
-            <button @click="addVolumeMAInput()">추가</button>
-          </div>
-          <div class="ma-chips">
-            <template x-for="period in volumeMAPeriods" :key="'volume-ma-' + period">
-              <button class="ma-chip" @click="removeVolumeMA(period)">
-                <span x-text="'SMA ' + period"></span>
-                <strong>×</strong>
-              </button>
-            </template>
-          </div>
-        </div>
-        <div class="ma-group ma-bench-group">
-          <div class="ma-label">벤치마크</div>
-          <div class="inline-check-row ma-bench-toggle">
-            <label class="inline-check">
-              <input type="checkbox" x-model="showInstrumentBench" @change="onInstrumentBenchmarkToggle()">
-              <span>벤치마크 캔들 표시</span>
-            </label>
-            <span class="inline-meta" x-show="showInstrumentBench && instrumentBenchIndexCode && instrumentBenchSeriesName"
-                  x-text="instrumentBenchIndexCode + ' / ' + instrumentBenchSeriesName"></span>
-          </div>
-          <div class="controls ma-bench-controls" x-show="showInstrumentBench">
-            <select x-model="instrumentBenchIndexCode" @change="onInstrumentBenchmarkIndexChange()">
-              <template x-for="b in benchmarks" :key="'inst-bench-index-' + b.index_code">
-                <option :value="b.index_code" x-text="b.index_code"></option>
-              </template>
-            </select>
-            <select x-model="instrumentBenchSeriesName" @change="onInstrumentBenchmarkSeriesChange()" :disabled="instrumentBenchSeriesOptions.length === 0">
-              <template x-for="s in instrumentBenchSeriesOptions" :key="'inst-bench-series-' + s.index_name">
-                <option :value="s.index_name" x-text="s.index_name + ' (' + fmt(s.record_count) + '건)'"></option>
-              </template>
-            </select>
-            <button @click="loadInstrumentBenchmark()" :disabled="!instrumentBenchIndexCode || !instrumentBenchSeriesName">조회</button>
-          </div>
-        </div>
-        <div class="ma-error" x-show="maSettingsError" x-text="maSettingsError"></div>
-      </div>
-      <div x-show="priceLoading" class="loading">로딩 중...</div>
-      <div x-show="!priceLoading && prices.length === 0 && priceQueried" class="empty">데이터가 없습니다</div>
-      <div x-show="prices.length > 0">
-        <div class="chart-wrap" :style="showInstrumentBench && instrumentBenchSeries.length > 0 ? 'height: 760px' : ''">
-          <div id="priceChart" class="lw-chart"></div>
-        </div>
-        <div class="empty" x-show="priceChartError" x-text="priceChartError"></div>
-      </div>
-      <div x-show="showInstrumentBench && instrumentBenchLoading" class="loading">로딩 중...</div>
-      <div x-show="showInstrumentBench && instrumentBenchError" class="empty" x-text="instrumentBenchError"></div>
-      <div x-show="showInstrumentBench && !instrumentBenchLoading && !instrumentBenchError && instrumentBenchSeries.length === 0 && instrumentBenchQueried" class="empty">
-        조회된 데이터가 없습니다
-      </div>
-    </div>
-
-  </div>
-
-  <div x-show="activeTab === 'quality'">
-    <div class="section">
-      <h2>데이터 이슈 현황 (미해결)</h2>
-        <select x-model="qualitySeverity" @change="loadQualityIssues()">
-          <option value="">전체 등급</option>
-          <option value="ERROR">ERROR</option>
-          <option value="WARN">WARN</option>
-          <option value="INFO">INFO</option>
-        </select>
-      </div>
-      <div x-show="qualityLoading" class="loading">로딩 중...</div>
-      <div x-show="!qualityLoading && qualityIssues.length === 0" class="empty">미해결 이슈가 없습니다</div>
-      <table x-show="!qualityLoading && qualityIssues.length > 0">
+    <div class="table-wrap">
+      <table>
         <thead>
-          <tr><th>등급</th><th>데이터셋</th><th>일자</th><th>종목/지수</th><th>이슈코드</th><th>상세</th><th>감지시각</th></tr>
+          <tr>
+            <th>??</th>
+            <th>??</th>
+            <th>????</th>
+            <th>???</th>
+            <th>????</th>
+            <th>????</th>
+            <th>???</th>
+            <th>????</th>
+          </tr>
         </thead>
-        <tbody>
-          <template x-for="q in qualityIssues" :key="q.issue_id">
-            <tr>
-              <td><span :class="severityBadge(q.severity)" x-text="q.severity"></span></td>
-              <td x-text="q.dataset_name"></td>
-              <td x-text="q.trade_date ?? '-'"></td>
-              <td x-text="q.external_code ?? q.index_code ?? '-'"></td>
-              <td x-text="q.issue_code"></td>
-              <td x-text="q.issue_detail ?? '-'" style="max-width:300px;word-break:break-word"></td>
-              <td x-text="q.detected_at ? q.detected_at.slice(0,19) : ''"></td>
-            </tr>
-          </template>
+        <tbody id="priceRows">
+          <tr><td colspan="8">??? ?????.</td></tr>
         </tbody>
       </table>
     </div>
-  </div>
-</main>
+  </section>
 
+  <section class="section">
+    <h2>????</h2>
+    <div class="controls">
+      <select id="benchmarkCode">
+        <option value="KOSPI">KOSPI</option>
+        <option value="KOSDAQ">KOSDAQ</option>
+      </select>
+      <input id="benchmarkSeries" type="text" placeholder="???? ??? ??? ??">
+      <button id="benchmarkButton" type="button">??</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>??</th>
+            <th>???</th>
+            <th>??</th>
+            <th>???</th>
+            <th>????</th>
+            <th>????</th>
+          </tr>
+        </thead>
+        <tbody id="benchmarkRows">
+          <tr><td colspan="6">?? ?? ?...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</main>
 </body>
 </html>
-
-
-

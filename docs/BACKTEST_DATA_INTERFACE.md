@@ -1,44 +1,39 @@
-# 백테스트 데이터 인터페이스
+# Backtest Data Interface
 
-## 목적
-하위 백테스트 소비자가 사용하는 데이터 계약을 정의합니다.
+## ??
+?? ?? ??? ?????? ?? ???? ?? ??? ????.
 
-## 원칙
-- 시그널 생성에는 `adjusted` 시계열을 사용합니다.
-- 체결 및 리스크 점검에는 `raw` 시계열을 사용합니다.
-- 시점 일관성이 중요하면 `as_of_timestamp`를 사용합니다.
+## ?? ???
+?? ??:
+- `GET /api/v1/instruments`
+- `GET /api/v1/instruments/{external_code}`
+- `GET /api/v1/instruments/{external_code}/daily`
 
-## 핵심 데이터셋
-### 가격 데이터
-- `core_market_dataset_v1`: 원주가 기준 소비 뷰
-- `core_market_dataset_v2`: 원주가와 수정주가 컬럼을 함께 제공하는 뷰
+`instrument_daily_v1`? ?? ?? ?? ????.
+- ???: `instrument_id`, `external_code`, `market_code`, `instrument_name`, `trade_date`
+- ??: `listing_date`, `delisting_date`, `is_trade_halted`, `record_status`
+- ???: `open`, `high`, `low`, `close`, `volume`, `turnover_value`, `market_value`, `listed_shares`
+- ???: `adj_open`, `adj_high`, `adj_low`, `adj_close`, `adj_volume`
+- ?? ??: `base_price`, `daily_factor`, `cumulative_factor`
 
-### 벤치마크
-- `benchmark_dataset_v1`
+## ????
+?? ??:
+- `GET /api/v1/benchmarks/{index_code}/daily`
 
-### 거래일 캘린더
-- `trading_calendar_v1`
-
-## 가격 필드
-### 원주가
+`benchmark_daily_v1` ??:
+- `index_code`, `index_name`, `trade_date`
 - `open`, `high`, `low`, `close`, `volume`
+- `turnover_value`, `market_cap`, `record_status`
 
-### 수정주가
-- `adj_open`, `adj_high`, `adj_low`, `adj_close`, `adj_volume`
+## ??? ???
+?? ??:
+- `GET /api/v1/calendar`
 
-## 참고
-- `turnover_value`, `market_value`는 정책상 원본 값을 유지합니다.
-- 수정 계수는 `price_adjustment_factors`에서 읽습니다.
-- 근거 신뢰도가 낮은 이벤트는 자동 반영하지 않습니다.
+`trading_calendar_v1` ??:
+- `market_code`, `trade_date`, `is_open`, `holiday_name`
 
-## Export/API 계약
-- `series_type`: `raw`, `adjusted`, `both`
-- 선택 파라미터 `as_of_timestamp`
-- export는 미리 구축된 계수만 읽고 즉시 재계산하지 않습니다.
-- `adjusted`/`both` export? ??? materialized factor? ?? ??? ?????.
-
-
-## Signal Validity
-- export? ??/??? ???? ????. ????? ??? ?? ?? row? ?????.
-- `instrument_daily`?? `is_tradable_for_signal`, `is_special_trading_regime`, `has_recent_halt_or_zero_volume`, `has_unresolved_corporate_action`, `signal_validity_reason`? ?????.
-- ?? ???: universe/holding ??? ?? row? ????, ?? ?? ??? `is_tradable_for_signal = true`? ?????.
+## ?? ??
+- ?? ????: `base_price / prev_close`
+- `base_price` ?? ?? ??? ??? `daily_factor = 1.0`
+- ????? ????? ??? ????
+- ??? ???? ??

@@ -27,6 +27,7 @@ class InstrumentRow:
     instrument_name: str
     listing_date: date
     delisting_date: Optional[date]
+    listed_shares: Optional[int]
     source_name: str
     collected_at: datetime
     updated_at: Optional[datetime] = None
@@ -43,8 +44,9 @@ class DailyMarketRow:
     volume: int
     turnover_value: Optional[float]
     market_value: Optional[float]
+    listed_shares: Optional[int]
+    base_price: Optional[float]
     is_trade_halted: bool
-    is_under_supervision: bool
     record_status: str
     source_name: str
     collected_at: datetime
@@ -60,6 +62,9 @@ class BenchmarkRow:
     high: Optional[float]
     low: Optional[float]
     close: float
+    volume: Optional[int]
+    turnover_value: Optional[float]
+    market_cap: Optional[float]
     record_status: str
     source_name: str
     collected_at: datetime
