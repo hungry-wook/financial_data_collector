@@ -16,25 +16,16 @@ class KRXClientConfig:
 
     @classmethod
     def from_settings(cls, s: KRXSettings) -> "KRXClientConfig":
-        return cls(
-            auth_key=s.auth_key,
-            daily_limit=s.daily_limit,
-        )
+        return cls(auth_key=s.auth_key, daily_limit=s.daily_limit)
 
 
 class KRXClient:
-    def __init__(
-        self,
-        config: KRXClientConfig,
-        openapi_client=None,
-    ):
+    def __init__(self, config: KRXClientConfig, openapi_client=None):
         self.config = config
         self.openapi_client = openapi_client or self._build_openapi_client()
         self._call_count = 0
         if self.openapi_client is None:
-            raise KRXClientError(
-                "pykrx_openapi is required but unavailable. Install dependency and verify AUTH_KEY."
-            )
+            raise KRXClientError("pykrx_openapi is required but unavailable. Install dependency and verify AUTH_KEY.")
 
     def _build_openapi_client(self):
         try:
@@ -73,30 +64,35 @@ class KRXClient:
 
     @staticmethod
     def _instrument_method_name(market_code: str) -> Optional[str]:
-        code = market_code.upper()
         return {
             "KOSPI": "get_stock_base_info",
             "KOSDAQ": "get_kosdaq_stock_base_info",
             "KONEX": "get_konex_base_info",
-        }.get(code)
+        }.get(str(market_code).upper())
 
     @staticmethod
     def _daily_market_method_name(market_code: str) -> Optional[str]:
-        code = market_code.upper()
         return {
             "KOSPI": "get_stock_daily_trade",
             "KOSDAQ": "get_kosdaq_stock_daily_trade",
             "KONEX": "get_konex_daily_trade",
-        }.get(code)
+        }.get(str(market_code).upper())
+
+    @staticmethod
+    def _daily_base_price_method_name(market_code: str) -> Optional[str]:
+        return {
+            "KOSPI": "get_stock_daily_base_price",
+            "KOSDAQ": "get_kosdaq_stock_daily_base_price",
+            "KONEX": "get_konex_daily_base_price",
+        }.get(str(market_code).upper())
 
     @staticmethod
     def _index_daily_method_name(index_code: str) -> Optional[str]:
-        code = index_code.upper()
         return {
             "KOSPI": "get_kospi_daily_trade",
             "KOSDAQ": "get_kosdaq_daily_trade",
             "KRX": "get_krx_daily_trade",
-        }.get(code)
+        }.get(str(index_code).upper())
 
     def get_instruments(self, market_code: str, base_date: date) -> Dict:
         method_name = self._instrument_method_name(market_code)
@@ -109,6 +105,17 @@ class KRXClient:
         if not method_name:
             raise KRXClientError(f"Unsupported market_code={market_code}")
         return self._request_with_openapi(method_name, self._to_bas_dd(trade_date))
+
+    def get_daily_base_price(self, market_code: str, trade_date: date) -> Dict:
+        method_name = self._daily_base_price_method_name(market_code)
+        if not method_name:
+            raise KRXClientError(f"Unsupported market_code={market_code}")
+        try:
+            return self._request_with_openapi(method_name, self._to_bas_dd(trade_date))
+        except KRXClientError as exc:
+            if "method not found" in str(exc):
+                return {"OutBlock_1": []}
+            raise
 
     def get_index_daily(self, index_code: str, trade_date: date) -> Dict:
         method_name = self._index_daily_method_name(index_code)

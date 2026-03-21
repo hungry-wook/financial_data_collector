@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "financial-data-collector"
-version = "0.1.0"
-description = "Phase 1 data collector and bulk export service"
+version = "0.2.0"
+description = "Minimal KRX swing backtest data collector"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
@@ -19,17 +19,9 @@ dependencies = [
 [project.scripts]
 collect-krx-data = "financial_data_collector.collect_krx_data:main"
 collect-kind-delistings = "financial_data_collector.collect_kind_delistings:main"
-collect-dart-events = "financial_data_collector.collect_dart_events:main"
-collect-dart-corporate-events = "financial_data_collector.collect_dart_corporate_events:main"
-review-corporate-events = "financial_data_collector.review_corporate_events:main"
-adjustment-quality-gate = "financial_data_collector.adjustment_quality_gate:main"
 rebuild-adjustment-factors = "financial_data_collector.rebuild_adjustment_factors:main"
-repair-corporate-event-timings = "financial_data_collector.repair_corporate_event_timings:main"
 
 [project.optional-dependencies]
-parquet = [
-  "pyarrow>=14.0.0",
-]
 dev = [
   "pytest>=7.0",
   "freezegun>=1.5.1",

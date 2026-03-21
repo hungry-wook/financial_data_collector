@@ -7,6 +7,3 @@ uvicorn[standard]>=0.39.0
 [dev]
 pytest>=7.0
 freezegun>=1.5.1
-
-[parquet]
-pyarrow>=14.0.0

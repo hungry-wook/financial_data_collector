@@ -1,137 +1,94 @@
 -- platform_postgres_migrations.sql
--- Reconcile existing PostgreSQL databases to the current runtime schema.
 
-CREATE TABLE IF NOT EXISTS instrument_delisting_snapshot (
-    delisting_snapshot_id BIGSERIAL PRIMARY KEY,
-    market_code VARCHAR(20) NOT NULL,
-    external_code VARCHAR(20) NOT NULL,
-    delisting_date DATE NOT NULL,
-    delisting_reason TEXT NULL,
-    note TEXT NULL,
-    source_name VARCHAR(30) NOT NULL,
-    collected_at TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP NULL,
-    run_id UUID NULL,
-    UNIQUE (market_code, external_code)
-);
+ALTER TABLE instruments DROP COLUMN IF EXISTS instrument_name_abbr;
+ALTER TABLE instruments DROP COLUMN IF EXISTS instrument_name_eng;
+ALTER TABLE instruments DROP COLUMN IF EXISTS security_group;
+ALTER TABLE instruments DROP COLUMN IF EXISTS sector_name;
+ALTER TABLE instruments DROP COLUMN IF EXISTS stock_type;
+ALTER TABLE instruments DROP COLUMN IF EXISTS par_value;
 
-ALTER TABLE instrument_delisting_snapshot
-DROP CONSTRAINT IF EXISTS fk_instrument_delisting_snapshot_run;
+ALTER TABLE daily_market_data ADD COLUMN IF NOT EXISTS base_price NUMERIC(20,6) NULL;
+ALTER TABLE daily_market_data DROP COLUMN IF EXISTS price_change;
+ALTER TABLE daily_market_data DROP COLUMN IF EXISTS change_rate;
+ALTER TABLE daily_market_data DROP COLUMN IF EXISTS is_under_supervision;
 
-ALTER TABLE instrument_delisting_snapshot
-ADD CONSTRAINT fk_instrument_delisting_snapshot_run
-FOREIGN KEY (run_id) REFERENCES collection_runs(run_id);
+ALTER TABLE benchmark_index_data DROP COLUMN IF EXISTS raw_open;
+ALTER TABLE benchmark_index_data DROP COLUMN IF EXISTS raw_high;
+ALTER TABLE benchmark_index_data DROP COLUMN IF EXISTS raw_low;
+ALTER TABLE benchmark_index_data DROP COLUMN IF EXISTS raw_close;
+ALTER TABLE benchmark_index_data DROP COLUMN IF EXISTS price_change;
+ALTER TABLE benchmark_index_data DROP COLUMN IF EXISTS change_rate;
 
-CREATE INDEX IF NOT EXISTS idx_delisting_snapshot_market_date
-ON instrument_delisting_snapshot(market_code, delisting_date);
+DROP TABLE IF EXISTS export_jobs CASCADE;
+DROP TABLE IF EXISTS event_validation_results CASCADE;
+DROP TABLE IF EXISTS corporate_events CASCADE;
 
-CREATE INDEX IF NOT EXISTS idx_delisting_snapshot_external_code
-ON instrument_delisting_snapshot(external_code);
+ALTER TABLE price_adjustment_factors DROP COLUMN IF EXISTS factor_source;
+ALTER TABLE price_adjustment_factors DROP COLUMN IF EXISTS confidence;
 
-CREATE INDEX IF NOT EXISTS idx_instruments_external_code
-ON instruments(external_code);
+DROP VIEW IF EXISTS core_market_dataset_v1 CASCADE;
+DROP VIEW IF EXISTS core_market_dataset_v2 CASCADE;
+DROP VIEW IF EXISTS benchmark_dataset_v1 CASCADE;
+DROP VIEW IF EXISTS trading_calendar_v1 CASCADE;
+DROP VIEW IF EXISTS instrument_daily_v1 CASCADE;
+DROP VIEW IF EXISTS benchmark_daily_v1 CASCADE;
 
-CREATE INDEX IF NOT EXISTS idx_instruments_name
-ON instruments(instrument_name);
+CREATE VIEW instrument_daily_v1 AS
+SELECT d.instrument_id,
+       i.external_code,
+       i.market_code,
+       i.instrument_name,
+       i.listing_date,
+       i.delisting_date,
+       d.trade_date,
+       d.open,
+       d.high,
+       d.low,
+       d.close,
+       d.volume,
+       d.turnover_value,
+       d.market_value,
+       d.listed_shares,
+       d.base_price,
+       COALESCE(p.factor, 1.0) AS daily_factor,
+       COALESCE(p.cumulative_factor, 1.0) AS cumulative_factor,
+       d.open * COALESCE(p.cumulative_factor, 1.0) AS adj_open,
+       d.high * COALESCE(p.cumulative_factor, 1.0) AS adj_high,
+       d.low * COALESCE(p.cumulative_factor, 1.0) AS adj_low,
+       d.close * COALESCE(p.cumulative_factor, 1.0) AS adj_close,
+       d.volume / COALESCE(NULLIF(p.cumulative_factor, 0), 1.0) AS adj_volume,
+       d.is_trade_halted,
+       d.record_status,
+       d.source_name,
+       d.collected_at
+FROM daily_market_data d
+JOIN instruments i ON i.instrument_id = d.instrument_id
+LEFT JOIN price_adjustment_factors p
+  ON p.instrument_id = d.instrument_id
+ AND p.trade_date = d.trade_date
+ AND p.as_of_date = DATE '9999-12-31';
 
-ALTER TABLE collection_runs
-DROP CONSTRAINT IF EXISTS collection_runs_status_check;
+CREATE VIEW benchmark_daily_v1 AS
+SELECT index_code,
+       index_name,
+       trade_date,
+       open,
+       high,
+       low,
+       close,
+       volume,
+       turnover_value,
+       market_cap,
+       record_status,
+       source_name,
+       collected_at
+FROM benchmark_index_data;
 
-ALTER TABLE collection_runs
-ADD CONSTRAINT collection_runs_status_check
-CHECK (status IN ('RUNNING', 'SUCCESS', 'PARTIAL', 'FAILED'));
-
-CREATE TABLE IF NOT EXISTS export_jobs (
-    job_id UUID PRIMARY KEY,
-    status VARCHAR(20) NOT NULL,
-    progress INTEGER NOT NULL DEFAULT 0,
-    submitted_at TIMESTAMP NOT NULL,
-    started_at TIMESTAMP NULL,
-    finished_at TIMESTAMP NULL,
-    output_path TEXT NULL,
-    files JSONB NULL,
-    row_counts JSONB NULL,
-    error_code VARCHAR(50) NULL,
-    error_message TEXT NULL,
-    request_payload JSONB NOT NULL,
-    CHECK (status IN ('PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED')),
-    CHECK (progress >= 0 AND progress <= 100)
-);
-
-CREATE INDEX IF NOT EXISTS idx_export_jobs_status_submitted_at
-ON export_jobs(status, submitted_at DESC);
-
-ALTER TABLE corporate_events
-ADD COLUMN IF NOT EXISTS raw_factor NUMERIC(18,10) NULL;
-
-ALTER TABLE corporate_events
-ADD COLUMN IF NOT EXISTS confidence VARCHAR(20) NOT NULL DEFAULT 'MEDIUM';
-
-ALTER TABLE corporate_events
-ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE';
-
-ALTER TABLE corporate_events
-DROP CONSTRAINT IF EXISTS corporate_events_status_check;
-
-ALTER TABLE corporate_events
-ADD CONSTRAINT corporate_events_status_check
-CHECK (status IN ('ACTIVE', 'NEEDS_REVIEW', 'REJECTED'));
-
-ALTER TABLE corporate_events
-DROP CONSTRAINT IF EXISTS corporate_events_confidence_check;
-
-ALTER TABLE corporate_events
-ADD CONSTRAINT corporate_events_confidence_check
-CHECK (confidence IN ('HIGH', 'MEDIUM', 'LOW'));
-
-CREATE INDEX IF NOT EXISTS idx_corporate_events_source_event_id
-ON corporate_events(source_event_id);
-
-CREATE TABLE IF NOT EXISTS event_validation_results (
-    validation_id BIGSERIAL PRIMARY KEY,
-    source_event_id VARCHAR(120) NOT NULL,
-    check_name VARCHAR(50) NOT NULL,
-    result VARCHAR(20) NOT NULL,
-    detail TEXT NULL,
-    validated_at TIMESTAMP NOT NULL,
-    CHECK (result IN ('MATCH', 'MISMATCH', 'PARSE_FAIL', 'SKIP'))
-);
-
-CREATE TABLE IF NOT EXISTS price_adjustment_factors (
-    instrument_id UUID NOT NULL,
-    trade_date DATE NOT NULL,
-    as_of_date DATE NOT NULL DEFAULT DATE '9999-12-31',
-    factor NUMERIC(18,10) NOT NULL,
-    cumulative_factor NUMERIC(18,10) NOT NULL,
-    factor_source VARCHAR(30) NOT NULL,
-    confidence VARCHAR(20) NOT NULL DEFAULT 'MEDIUM',
-    created_at TIMESTAMP NOT NULL,
-    run_id UUID NULL,
-    PRIMARY KEY (instrument_id, trade_date, as_of_date),
-    CHECK (factor > 0),
-    CHECK (cumulative_factor > 0),
-    CHECK (confidence IN ('HIGH', 'MEDIUM', 'LOW'))
-);
-
-ALTER TABLE price_adjustment_factors
-DROP CONSTRAINT IF EXISTS fk_price_adjustment_factors_instrument;
-
-ALTER TABLE price_adjustment_factors
-ADD CONSTRAINT fk_price_adjustment_factors_instrument
-FOREIGN KEY (instrument_id) REFERENCES instruments(instrument_id);
-
-ALTER TABLE price_adjustment_factors
-DROP CONSTRAINT IF EXISTS fk_price_adjustment_factors_run;
-
-ALTER TABLE price_adjustment_factors
-ADD CONSTRAINT fk_price_adjustment_factors_run
-FOREIGN KEY (run_id) REFERENCES collection_runs(run_id);
-
-CREATE INDEX IF NOT EXISTS idx_price_adjustment_factors_trade_date
-ON price_adjustment_factors(trade_date, as_of_date);
-
-DROP TABLE IF EXISTS snapshot_runs;
-DROP TABLE IF EXISTS dataset_snapshots;
-DROP TABLE IF EXISTS source_policies;
-DROP TABLE IF EXISTS run_partitions;
-DROP TABLE IF EXISTS quality_metrics;
+CREATE VIEW trading_calendar_v1 AS
+SELECT market_code,
+       trade_date,
+       is_open,
+       holiday_name,
+       source_name,
+       collected_at
+FROM trading_calendar;

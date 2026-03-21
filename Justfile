@@ -1,4 +1,4 @@
-﻿set shell := ["powershell.exe", "-NoProfile", "-Command"]
+set shell := ["powershell.exe", "-NoProfile", "-Command"]
 
 default: help
 
@@ -29,17 +29,14 @@ collect date_from date_to:
 collect-local date_from date_to:
     uv run python -m financial_data_collector.collect_krx_data --date-from {{date_from}} --date-to {{date_to}}
 
-collect-dart-local date_from date_to:
-    uv run collect-dart-corporate-events --database-url $env:DATABASE_URL --bgn-de {{date_from}} --end-de {{date_to}}
-
-collect-dart-adjusted-local date_from date_to overlap_days="7":
-    uv run collect-dart-corporate-events --database-url $env:DATABASE_URL --bgn-de {{date_from}} --end-de {{date_to}} --rebuild-adjustments --overlap-days {{overlap_days}}
-
 collect-delisted date_from="1900-01-01" date_to="":
     $to = if ("{{date_to}}" -eq "") { (Get-Date -Format "yyyy-MM-dd") } else { "{{date_to}}" }; docker compose --profile collector run --rm -e DATE_FROM_ARG={{date_from}} -e DATE_TO_ARG=$to --entrypoint sh collector-once -c 'PYTHONPATH=/app/src uv run python -m financial_data_collector.collect_kind_delistings --database-url ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/financial_data} --date-from $DATE_FROM_ARG --date-to $DATE_TO_ARG'
 
 collect-delisted-local date_from="1900-01-01" date_to="":
     $to = if ("{{date_to}}" -eq "") { (Get-Date -Format "yyyy-MM-dd") } else { "{{date_to}}" }; $env:PYTHONPATH='src'; uv run python -m financial_data_collector.collect_kind_delistings --database-url $env:DATABASE_URL --date-from {{date_from}} --date-to $to
+
+rebuild-adjustments-local date_from date_to:
+    uv run rebuild-adjustment-factors --database-url $env:DATABASE_URL --date-from {{date_from}} --date-to {{date_to}}
 
 serve-local:
     uv run uvicorn financial_data_collector.server:app --host 0.0.0.0 --port 8000
@@ -55,4 +52,3 @@ doctor:
 reset-db:
     docker compose down -v
     docker compose up -d --build
-

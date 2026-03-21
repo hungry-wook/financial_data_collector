@@ -1,25 +1,14 @@
 -- platform_schema.sql
--- General-purpose financial time-series ingestion schema
--- DB: PostgreSQL 14+
-
--- =====================================================
--- Phase 1: Core Ingestion
--- =====================================================
+-- Minimal schema for swing-momentum backtesting
 
 CREATE TABLE instruments (
     instrument_id UUID PRIMARY KEY,
     external_code VARCHAR(20) NOT NULL,
     market_code VARCHAR(20) NOT NULL,
     instrument_name VARCHAR(200) NOT NULL,
-    instrument_name_abbr VARCHAR(200) NULL,
-    instrument_name_eng VARCHAR(200) NULL,
     listing_date DATE NOT NULL,
     delisting_date DATE NULL,
     listed_shares BIGINT NULL,
-    security_group VARCHAR(100) NULL,
-    sector_name VARCHAR(100) NULL,
-    stock_type VARCHAR(100) NULL,
-    par_value NUMERIC(20,6) NULL,
     source_name VARCHAR(30) NOT NULL,
     collected_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NULL,
@@ -79,11 +68,9 @@ CREATE TABLE daily_market_data (
     volume BIGINT NOT NULL,
     turnover_value NUMERIC(28,6) NULL,
     market_value NUMERIC(28,6) NULL,
-    price_change NUMERIC(20,6) NULL,
-    change_rate NUMERIC(20,6) NULL,
     listed_shares BIGINT NULL,
+    base_price NUMERIC(20,6) NULL,
     is_trade_halted BOOLEAN NOT NULL DEFAULT FALSE,
-    is_under_supervision BOOLEAN NOT NULL DEFAULT FALSE,
     record_status VARCHAR(20) NOT NULL DEFAULT 'VALID',
     source_name VARCHAR(30) NOT NULL,
     collected_at TIMESTAMP NOT NULL,
@@ -105,15 +92,9 @@ CREATE TABLE benchmark_index_data (
     high NUMERIC(20,6) NULL,
     low NUMERIC(20,6) NULL,
     close NUMERIC(20,6) NOT NULL,
-    raw_open VARCHAR(40) NULL,
-    raw_high VARCHAR(40) NULL,
-    raw_low VARCHAR(40) NULL,
-    raw_close VARCHAR(40) NULL,
     volume BIGINT NULL,
     turnover_value NUMERIC(28,6) NULL,
     market_cap NUMERIC(28,6) NULL,
-    price_change NUMERIC(20,6) NULL,
-    change_rate NUMERIC(20,6) NULL,
     record_status VARCHAR(20) NOT NULL DEFAULT 'VALID',
     source_name VARCHAR(30) NOT NULL,
     collected_at TIMESTAMP NOT NULL,
@@ -147,21 +128,17 @@ CREATE TABLE data_quality_issues (
     CHECK (severity IN ('INFO', 'WARN', 'ERROR'))
 );
 
-CREATE TABLE export_jobs (
-    job_id UUID PRIMARY KEY,
-    status VARCHAR(20) NOT NULL,
-    progress INTEGER NOT NULL DEFAULT 0,
-    submitted_at TIMESTAMP NOT NULL,
-    started_at TIMESTAMP NULL,
-    finished_at TIMESTAMP NULL,
-    output_path TEXT NULL,
-    files JSONB NULL,
-    row_counts JSONB NULL,
-    error_code VARCHAR(50) NULL,
-    error_message TEXT NULL,
-    request_payload JSONB NOT NULL,
-    CHECK (status IN ('PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED')),
-    CHECK (progress >= 0 AND progress <= 100)
+CREATE TABLE price_adjustment_factors (
+    instrument_id UUID NOT NULL,
+    trade_date DATE NOT NULL,
+    as_of_date DATE NOT NULL DEFAULT DATE '9999-12-31',
+    factor NUMERIC(18,10) NOT NULL,
+    cumulative_factor NUMERIC(18,10) NOT NULL,
+    created_at TIMESTAMP NOT NULL,
+    run_id UUID NULL,
+    PRIMARY KEY (instrument_id, trade_date, as_of_date),
+    CHECK (factor > 0),
+    CHECK (cumulative_factor > 0)
 );
 
 ALTER TABLE daily_market_data
@@ -192,9 +169,16 @@ ALTER TABLE data_quality_issues
 ADD CONSTRAINT fk_data_quality_issues_run
 FOREIGN KEY (run_id) REFERENCES collection_runs(run_id);
 
+ALTER TABLE price_adjustment_factors
+ADD CONSTRAINT fk_price_adjustment_factors_instrument
+FOREIGN KEY (instrument_id) REFERENCES instruments(instrument_id);
+
+ALTER TABLE price_adjustment_factors
+ADD CONSTRAINT fk_price_adjustment_factors_run
+FOREIGN KEY (run_id) REFERENCES collection_runs(run_id);
+
 CREATE INDEX idx_instruments_market_code ON instruments(market_code, external_code);
 CREATE INDEX idx_instruments_external_code ON instruments(external_code);
-CREATE INDEX idx_instruments_name ON instruments(instrument_name);
 CREATE INDEX idx_delisting_snapshot_market_date ON instrument_delisting_snapshot(market_code, delisting_date);
 CREATE INDEX idx_delisting_snapshot_external_code ON instrument_delisting_snapshot(external_code);
 CREATE INDEX idx_daily_trade_date ON daily_market_data(trade_date);
@@ -205,10 +189,9 @@ CREATE INDEX idx_calendar_market_open_date ON trading_calendar(market_code, is_o
 CREATE INDEX idx_issues_date ON data_quality_issues(trade_date, severity);
 CREATE INDEX idx_issues_instrument_date ON data_quality_issues(instrument_id, trade_date);
 CREATE INDEX idx_runs_pipeline_time ON collection_runs(pipeline_name, started_at DESC);
-CREATE INDEX idx_export_jobs_status_submitted_at ON export_jobs(status, submitted_at DESC);
+CREATE INDEX idx_price_adjustment_factors_trade_date ON price_adjustment_factors(trade_date, as_of_date);
 
--- Consumer views
-CREATE VIEW core_market_dataset_v1 AS
+CREATE VIEW instrument_daily_v1 AS
 SELECT d.instrument_id,
        i.external_code,
        i.market_code,
@@ -223,15 +206,27 @@ SELECT d.instrument_id,
        d.volume,
        d.turnover_value,
        d.market_value,
+       d.listed_shares,
+       d.base_price,
+       COALESCE(p.factor, 1.0) AS daily_factor,
+       COALESCE(p.cumulative_factor, 1.0) AS cumulative_factor,
+       d.open * COALESCE(p.cumulative_factor, 1.0) AS adj_open,
+       d.high * COALESCE(p.cumulative_factor, 1.0) AS adj_high,
+       d.low * COALESCE(p.cumulative_factor, 1.0) AS adj_low,
+       d.close * COALESCE(p.cumulative_factor, 1.0) AS adj_close,
+       d.volume / COALESCE(NULLIF(p.cumulative_factor, 0), 1.0) AS adj_volume,
        d.is_trade_halted,
-       d.is_under_supervision,
        d.record_status,
        d.source_name,
        d.collected_at
 FROM daily_market_data d
-JOIN instruments i ON i.instrument_id = d.instrument_id;
+JOIN instruments i ON i.instrument_id = d.instrument_id
+LEFT JOIN price_adjustment_factors p
+  ON p.instrument_id = d.instrument_id
+ AND p.trade_date = d.trade_date
+ AND p.as_of_date = DATE '9999-12-31';
 
-CREATE VIEW benchmark_dataset_v1 AS
+CREATE VIEW benchmark_daily_v1 AS
 SELECT index_code,
        index_name,
        trade_date,
@@ -242,8 +237,6 @@ SELECT index_code,
        volume,
        turnover_value,
        market_cap,
-       price_change,
-       change_rate,
        record_status,
        source_name,
        collected_at
@@ -257,249 +250,3 @@ SELECT market_code,
        source_name,
        collected_at
 FROM trading_calendar;
-
--- =====================================================
--- Phase 3: Domain Expansion (additive)
--- =====================================================
-
-CREATE TABLE corporate_events (
-    event_id VARCHAR(120) NOT NULL,
-    event_version INTEGER NOT NULL,
-    instrument_id UUID NOT NULL,
-    event_type VARCHAR(40) NOT NULL,
-    announce_date DATE NULL,
-    effective_date DATE NULL,
-    source_event_id VARCHAR(120) NULL,
-    source_name VARCHAR(30) NOT NULL,
-    collected_at TIMESTAMP NOT NULL,
-    run_id UUID NULL,
-    payload JSONB NULL,
-    PRIMARY KEY (event_id, event_version),
-    CHECK (event_version >= 1)
-);
-
-ALTER TABLE corporate_events
-ADD CONSTRAINT fk_corporate_events_instrument
-FOREIGN KEY (instrument_id) REFERENCES instruments(instrument_id);
-
-ALTER TABLE corporate_events
-ADD CONSTRAINT fk_corporate_events_run
-FOREIGN KEY (run_id) REFERENCES collection_runs(run_id);
-
-CREATE INDEX idx_corporate_events_instrument_date ON corporate_events(instrument_id, effective_date);
-CREATE INDEX idx_corporate_events_type_date ON corporate_events(event_type, effective_date);
-
--- =====================================================
--- Schema comments: tables and columns
--- =====================================================
-
-COMMENT ON TABLE instruments IS 'Master table for tradable instruments.';
-COMMENT ON COLUMN instruments.instrument_id IS 'Internal immutable instrument identifier.';
-COMMENT ON COLUMN instruments.external_code IS 'Exchange-level instrument code.';
-COMMENT ON COLUMN instruments.market_code IS 'Market classification code.';
-COMMENT ON COLUMN instruments.instrument_name IS 'Display name of the instrument.';
-COMMENT ON COLUMN instruments.listing_date IS 'Listing start date.';
-COMMENT ON COLUMN instruments.delisting_date IS 'Delisting date, if applicable.';
-COMMENT ON COLUMN instruments.source_name IS 'Upstream source name for master data.';
-COMMENT ON COLUMN instruments.collected_at IS 'UTC timestamp when the row was collected.';
-COMMENT ON COLUMN instruments.updated_at IS 'UTC timestamp when the row was last updated.';
-
-COMMENT ON TABLE instrument_delisting_snapshot IS 'Latest delisting details by market_code and external_code.';
-COMMENT ON COLUMN instrument_delisting_snapshot.market_code IS 'Market classification code.';
-COMMENT ON COLUMN instrument_delisting_snapshot.external_code IS 'Exchange-level instrument code.';
-COMMENT ON COLUMN instrument_delisting_snapshot.delisting_date IS 'Delisting effective date.';
-COMMENT ON COLUMN instrument_delisting_snapshot.delisting_reason IS 'Delisting reason from source.';
-COMMENT ON COLUMN instrument_delisting_snapshot.note IS 'Supplementary note from source.';
-COMMENT ON COLUMN instrument_delisting_snapshot.source_name IS 'Upstream source name for delisting detail.';
-COMMENT ON COLUMN instrument_delisting_snapshot.collected_at IS 'UTC timestamp when the snapshot row was collected.';
-COMMENT ON COLUMN instrument_delisting_snapshot.updated_at IS 'UTC timestamp when the snapshot row was last updated.';
-COMMENT ON COLUMN instrument_delisting_snapshot.run_id IS 'Ingestion run identifier.';
-
-COMMENT ON TABLE collection_runs IS 'Execution metadata for ingestion runs.';
-COMMENT ON COLUMN collection_runs.run_id IS 'Unique ingestion run identifier.';
-COMMENT ON COLUMN collection_runs.pipeline_name IS 'Pipeline job name.';
-COMMENT ON COLUMN collection_runs.source_name IS 'Source system name.';
-COMMENT ON COLUMN collection_runs.window_start IS 'Start date of the ingestion window.';
-COMMENT ON COLUMN collection_runs.window_end IS 'End date of the ingestion window.';
-COMMENT ON COLUMN collection_runs.status IS 'Run status: SUCCESS, PARTIAL, FAILED.';
-COMMENT ON COLUMN collection_runs.started_at IS 'UTC timestamp when the run started.';
-COMMENT ON COLUMN collection_runs.finished_at IS 'UTC timestamp when the run finished.';
-COMMENT ON COLUMN collection_runs.success_count IS 'Count of successfully processed records.';
-COMMENT ON COLUMN collection_runs.failure_count IS 'Count of failed records.';
-COMMENT ON COLUMN collection_runs.warning_count IS 'Count of warning events.';
-COMMENT ON COLUMN collection_runs.metadata IS 'Free-form run metadata payload.';
-
-COMMENT ON TABLE trading_calendar IS 'Market trading calendar by date.';
-COMMENT ON COLUMN trading_calendar.market_code IS 'Market code for the calendar row.';
-COMMENT ON COLUMN trading_calendar.trade_date IS 'Trading date.';
-COMMENT ON COLUMN trading_calendar.is_open IS 'Whether the market is open on trade_date.';
-COMMENT ON COLUMN trading_calendar.holiday_name IS 'Holiday reason when market is closed.';
-COMMENT ON COLUMN trading_calendar.source_name IS 'Upstream source name for calendar data.';
-COMMENT ON COLUMN trading_calendar.collected_at IS 'UTC timestamp when the row was collected.';
-COMMENT ON COLUMN trading_calendar.run_id IS 'Ingestion run identifier.';
-
-COMMENT ON TABLE daily_market_data IS 'Daily OHLCV and market state for instruments.';
-COMMENT ON COLUMN daily_market_data.instrument_id IS 'Reference to instruments.instrument_id.';
-COMMENT ON COLUMN daily_market_data.trade_date IS 'Trading date.';
-COMMENT ON COLUMN daily_market_data.open IS 'Open price.';
-COMMENT ON COLUMN daily_market_data.high IS 'High price.';
-COMMENT ON COLUMN daily_market_data.low IS 'Low price.';
-COMMENT ON COLUMN daily_market_data.close IS 'Close price.';
-COMMENT ON COLUMN daily_market_data.volume IS 'Traded volume.';
-COMMENT ON COLUMN daily_market_data.turnover_value IS 'Traded value in local currency.';
-COMMENT ON COLUMN daily_market_data.market_value IS 'End-of-day market capitalization.';
-COMMENT ON COLUMN daily_market_data.is_trade_halted IS 'Whether trading was halted on trade_date.';
-COMMENT ON COLUMN daily_market_data.is_under_supervision IS 'Whether instrument was under supervision/watch status.';
-COMMENT ON COLUMN daily_market_data.record_status IS 'Validation state: VALID, INVALID, MISSING.';
-COMMENT ON COLUMN daily_market_data.source_name IS 'Upstream source name for daily data.';
-COMMENT ON COLUMN daily_market_data.collected_at IS 'UTC timestamp when the row was collected.';
-COMMENT ON COLUMN daily_market_data.run_id IS 'Ingestion run identifier.';
-
-COMMENT ON TABLE benchmark_index_data IS 'Daily OHLC data for benchmark indices.';
-COMMENT ON COLUMN benchmark_index_data.index_code IS 'Benchmark index code.';
-COMMENT ON COLUMN benchmark_index_data.trade_date IS 'Trading date.';
-COMMENT ON COLUMN benchmark_index_data.open IS 'Open index level.';
-COMMENT ON COLUMN benchmark_index_data.high IS 'High index level.';
-COMMENT ON COLUMN benchmark_index_data.low IS 'Low index level.';
-COMMENT ON COLUMN benchmark_index_data.close IS 'Close index level.';
-COMMENT ON COLUMN benchmark_index_data.source_name IS 'Upstream source name for index data.';
-COMMENT ON COLUMN benchmark_index_data.collected_at IS 'UTC timestamp when the row was collected.';
-COMMENT ON COLUMN benchmark_index_data.run_id IS 'Ingestion run identifier.';
-
-COMMENT ON TABLE data_quality_issues IS 'Issue log for missing data, validation failures, and warnings.';
-COMMENT ON COLUMN data_quality_issues.issue_id IS 'Surrogate issue identifier.';
-COMMENT ON COLUMN data_quality_issues.dataset_name IS 'Dataset where the issue was detected.';
-COMMENT ON COLUMN data_quality_issues.trade_date IS 'Affected trading date, if available.';
-COMMENT ON COLUMN data_quality_issues.instrument_id IS 'Affected instrument identifier, if applicable.';
-COMMENT ON COLUMN data_quality_issues.index_code IS 'Affected benchmark index code, if applicable.';
-COMMENT ON COLUMN data_quality_issues.issue_code IS 'Normalized issue code.';
-COMMENT ON COLUMN data_quality_issues.severity IS 'Issue severity: INFO, WARN, ERROR.';
-COMMENT ON COLUMN data_quality_issues.issue_detail IS 'Human-readable issue details.';
-COMMENT ON COLUMN data_quality_issues.source_name IS 'Related source system.';
-COMMENT ON COLUMN data_quality_issues.detected_at IS 'UTC timestamp when issue was detected.';
-COMMENT ON COLUMN data_quality_issues.run_id IS 'Ingestion run identifier.';
-COMMENT ON COLUMN data_quality_issues.resolved_at IS 'UTC timestamp when issue was resolved.';
-
-COMMENT ON TABLE corporate_events IS 'Normalized corporate event records for domain expansion.';
-COMMENT ON COLUMN corporate_events.event_id IS 'Stable event identifier.';
-COMMENT ON COLUMN corporate_events.event_version IS 'Monotonic event version number.';
-COMMENT ON COLUMN corporate_events.instrument_id IS 'Affected instrument identifier.';
-COMMENT ON COLUMN corporate_events.event_type IS 'Normalized event type.';
-COMMENT ON COLUMN corporate_events.announce_date IS 'Announcement date.';
-COMMENT ON COLUMN corporate_events.effective_date IS 'Effective date for event application.';
-COMMENT ON COLUMN corporate_events.source_event_id IS 'Original event identifier in source system.';
-COMMENT ON COLUMN corporate_events.source_name IS 'Source system name.';
-COMMENT ON COLUMN corporate_events.collected_at IS 'UTC timestamp when event was collected.';
-COMMENT ON COLUMN corporate_events.run_id IS 'Ingestion run identifier.';
-COMMENT ON COLUMN corporate_events.payload IS 'Raw normalized payload for extensibility.';
-
-COMMENT ON VIEW core_market_dataset_v1 IS 'Phase 1 consumer view for instrument daily data with master attributes.';
-COMMENT ON VIEW benchmark_dataset_v1 IS 'Phase 1 consumer view for benchmark daily index data.';
-COMMENT ON VIEW trading_calendar_v1 IS 'Phase 1 consumer view for trading calendar data.';
-
--- =====================================================
--- Adjusted Price Pipeline (additive)
--- =====================================================
-
-ALTER TABLE corporate_events
-ADD COLUMN IF NOT EXISTS raw_factor NUMERIC(18,10) NULL;
-
-ALTER TABLE corporate_events
-ADD COLUMN IF NOT EXISTS confidence VARCHAR(20) NOT NULL DEFAULT 'MEDIUM';
-
-ALTER TABLE corporate_events
-ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE';
-
-ALTER TABLE corporate_events
-DROP CONSTRAINT IF EXISTS corporate_events_status_check;
-
-ALTER TABLE corporate_events
-ADD CONSTRAINT corporate_events_status_check
-CHECK (status IN ('ACTIVE', 'NEEDS_REVIEW', 'REJECTED'));
-
-ALTER TABLE corporate_events
-DROP CONSTRAINT IF EXISTS corporate_events_confidence_check;
-
-ALTER TABLE corporate_events
-ADD CONSTRAINT corporate_events_confidence_check
-CHECK (confidence IN ('HIGH', 'MEDIUM', 'LOW'));
-
-CREATE INDEX IF NOT EXISTS idx_corporate_events_source_event_id ON corporate_events(source_event_id);
-
-CREATE TABLE IF NOT EXISTS event_validation_results (
-    validation_id BIGSERIAL PRIMARY KEY,
-    source_event_id VARCHAR(120) NOT NULL,
-    check_name VARCHAR(50) NOT NULL,
-    result VARCHAR(20) NOT NULL,
-    detail TEXT NULL,
-    validated_at TIMESTAMP NOT NULL,
-    CHECK (result IN ('MATCH', 'MISMATCH', 'PARSE_FAIL', 'SKIP'))
-);
-
-CREATE TABLE IF NOT EXISTS price_adjustment_factors (
-    instrument_id UUID NOT NULL,
-    trade_date DATE NOT NULL,
-    as_of_date DATE NOT NULL DEFAULT DATE '9999-12-31',
-    factor NUMERIC(18,10) NOT NULL,
-    cumulative_factor NUMERIC(18,10) NOT NULL,
-    factor_source VARCHAR(30) NOT NULL,
-    confidence VARCHAR(20) NOT NULL DEFAULT 'MEDIUM',
-    created_at TIMESTAMP NOT NULL,
-    run_id UUID NULL,
-    PRIMARY KEY (instrument_id, trade_date, as_of_date),
-    CHECK (factor > 0),
-    CHECK (cumulative_factor > 0),
-    CHECK (confidence IN ('HIGH', 'MEDIUM', 'LOW'))
-);
-
-ALTER TABLE price_adjustment_factors
-DROP CONSTRAINT IF EXISTS fk_price_adjustment_factors_instrument;
-
-ALTER TABLE price_adjustment_factors
-ADD CONSTRAINT fk_price_adjustment_factors_instrument
-FOREIGN KEY (instrument_id) REFERENCES instruments(instrument_id);
-
-ALTER TABLE price_adjustment_factors
-DROP CONSTRAINT IF EXISTS fk_price_adjustment_factors_run;
-
-ALTER TABLE price_adjustment_factors
-ADD CONSTRAINT fk_price_adjustment_factors_run
-FOREIGN KEY (run_id) REFERENCES collection_runs(run_id);
-
-CREATE INDEX IF NOT EXISTS idx_price_adjustment_factors_trade_date
-ON price_adjustment_factors(trade_date, as_of_date);
-
-DROP VIEW IF EXISTS core_market_dataset_v2;
-
-CREATE VIEW core_market_dataset_v2 AS
-SELECT d.instrument_id,
-       i.external_code,
-       i.market_code,
-       i.instrument_name,
-       i.listing_date,
-       i.delisting_date,
-       d.trade_date,
-       d.open AS raw_open,
-       d.high AS raw_high,
-       d.low AS raw_low,
-       d.close AS raw_close,
-       d.volume AS raw_volume,
-       COALESCE(p.cumulative_factor, 1.0) AS cumulative_factor,
-       d.open * COALESCE(p.cumulative_factor, 1.0) AS adj_open,
-       d.high * COALESCE(p.cumulative_factor, 1.0) AS adj_high,
-       d.low * COALESCE(p.cumulative_factor, 1.0) AS adj_low,
-       d.close * COALESCE(p.cumulative_factor, 1.0) AS adj_close,
-       d.volume / COALESCE(NULLIF(p.cumulative_factor, 0), 1.0) AS adj_volume,
-       d.turnover_value,
-       d.market_value,
-       d.is_trade_halted,
-       d.is_under_supervision,
-       d.record_status,
-       d.source_name,
-       d.collected_at
-FROM daily_market_data d
-JOIN instruments i ON i.instrument_id = d.instrument_id
-LEFT JOIN price_adjustment_factors p
-  ON p.instrument_id = d.instrument_id
- AND p.trade_date = d.trade_date
- AND p.as_of_date = DATE '9999-12-31';
