@@ -1,4 +1,4 @@
-﻿from datetime import date
+from datetime import date
 
 from financial_data_collector.adjustment_service import AdjustmentService
 from financial_data_collector.collectors import DailyMarketCollector, InstrumentCollector
@@ -70,6 +70,49 @@ def test_adjustment_service_builds_cumulative_factor(repo):
     # event day and after stay at latest basis
     assert rows[1]["cumulative_factor"] == 1.0
     assert rows[2]["cumulative_factor"] == 1.0
+
+
+def test_adjustment_service_prefers_share_ratio_over_event_day_price_move(repo):
+    InstrumentCollector(repo).collect(
+        [
+            {
+                "instrument_id": "i_adj_price_noise",
+                "external_code": "123457",
+                "market_code": "KOSDAQ",
+                "instrument_name": "Adj Price Noise",
+                "listing_date": date(2020, 1, 1),
+            }
+        ],
+        "krx",
+    )
+    instrument_id = repo.get_instrument_id_by_external_code("123457", market_code="KOSDAQ")
+    assert instrument_id
+
+    DailyMarketCollector(repo).collect(
+        [
+            {"instrument_id": instrument_id, "trade_date": date(2026, 1, 2), "open": 100, "high": 110, "low": 90, "close": 100, "volume": 10, "listed_shares": 100},
+            {"instrument_id": instrument_id, "trade_date": date(2026, 1, 3), "open": 55, "high": 60, "low": 50, "close": 55, "volume": 10, "listed_shares": 200},
+            {"instrument_id": instrument_id, "trade_date": date(2026, 1, 6), "open": 56, "high": 61, "low": 51, "close": 56, "volume": 10, "listed_shares": 200},
+        ],
+        "krx",
+        "r1",
+    )
+
+    out = AdjustmentService(repo).rebuild_factors("2026-01-01", "2026-01-10")
+    assert out["factors"] == 3
+
+    rows = repo.query(
+        """
+        SELECT trade_date, factor, cumulative_factor, factor_source
+        FROM price_adjustment_factors
+        WHERE instrument_id = %s AND as_of_date = DATE '9999-12-31'
+        ORDER BY trade_date
+        """,
+        (instrument_id,),
+    )
+    assert rows[0]["cumulative_factor"] == 0.5
+    assert rows[1]["factor"] == 0.5
+    assert rows[1]["factor_source"] == "market_observed"
 
 
 def test_adjustment_service_falls_back_to_event_factor_without_listed_share_change(repo):

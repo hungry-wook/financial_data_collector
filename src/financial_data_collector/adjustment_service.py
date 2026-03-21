@@ -69,24 +69,6 @@ class AdjustmentService:
             return None
         return factor
 
-    @staticmethod
-    def _resolve_price_link_factor(row: Dict) -> Optional[float]:
-        prev_close = row.get("prev_close")
-        close = row.get("close")
-        if prev_close in (None, "", 0) or close in (None, "", 0):
-            return None
-        try:
-            prev_value = float(prev_close)
-            curr_value = float(close)
-        except (TypeError, ValueError):
-            return None
-        if prev_value <= 0 or curr_value <= 0:
-            return None
-        factor = curr_value / prev_value
-        if not isfinite(factor) or factor <= 0:
-            return None
-        return factor
-
     def rebuild_factors(
         self,
         date_from: str,
@@ -128,15 +110,13 @@ class AdjustmentService:
 
             market_factor = self._resolve_market_factor(row)
             if market_factor is not None:
-                factor = self._resolve_price_link_factor(row) or float(market_factor)
-                factor_by_instrument_date[instrument_id][trade_date] = float(factor)
+                factor_by_instrument_date[instrument_id][trade_date] = float(market_factor)
                 factor_source_by_instrument_date[instrument_id][trade_date] = "market_observed"
                 continue
 
             event_factor = event_factor_by_instrument_date.get(instrument_id, {}).get(trade_date)
             if event_factor is not None:
-                factor = self._resolve_price_link_factor(row) or float(event_factor)
-                factor_by_instrument_date[instrument_id][trade_date] = float(factor)
+                factor_by_instrument_date[instrument_id][trade_date] = float(event_factor)
                 factor_source_by_instrument_date[instrument_id][trade_date] = "corporate_event_fallback"
 
         now = _utc_now_iso()
