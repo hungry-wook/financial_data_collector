@@ -544,6 +544,35 @@ class Repository:
                 out[code] = rows[0]["index_name"]
         return out
 
+    def list_benchmark_series(self) -> List[Dict]:
+        return self.query(
+            """
+            SELECT index_code, index_name, COUNT(*) AS record_count,
+                   MIN(trade_date) AS date_from, MAX(trade_date) AS date_to
+            FROM benchmark_daily_v1
+            GROUP BY index_code, index_name
+            ORDER BY index_code, index_name
+            """
+        )
+
+    def get_adjustment_coverage(self, date_from: str, date_to: str, as_of_date: str = "9999-12-31") -> Dict:
+        daily_rows = self.query(
+            "SELECT COUNT(*) AS cnt FROM daily_market_data WHERE trade_date BETWEEN %s AND %s",
+            (date_from, date_to),
+        )[0]["cnt"]
+        factor_rows = self.query(
+            "SELECT COUNT(*) AS cnt FROM price_adjustment_factors WHERE trade_date BETWEEN %s AND %s AND as_of_date = %s",
+            (date_from, date_to, as_of_date),
+        )[0]["cnt"]
+        return {
+            "date_from": date_from,
+            "date_to": date_to,
+            "as_of_date": as_of_date,
+            "daily_rows": daily_rows,
+            "factor_rows": factor_rows,
+            "is_complete": int(factor_rows) >= int(daily_rows),
+        }
+
     def get_benchmark_daily(self, index_code: str, series_name: str = "", date_from: str = "", date_to: str = "", limit: int = 250, offset: int = 0) -> Dict:
         selected_series = series_name.strip()
         if not selected_series:

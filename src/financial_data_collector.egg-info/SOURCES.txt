@@ -7,6 +7,7 @@ src/financial_data_collector/collect_kind_delistings.py
 src/financial_data_collector/collect_krx_data.py
 src/financial_data_collector/collectors.py
 src/financial_data_collector/dashboard_routes.py
+src/financial_data_collector/export_backtest_dataset.py
 src/financial_data_collector/kind_client.py
 src/financial_data_collector/krx_client.py
 src/financial_data_collector/models.py
@@ -23,6 +24,7 @@ src/financial_data_collector.egg-info/entry_points.txt
 src/financial_data_collector.egg-info/requires.txt
 src/financial_data_collector.egg-info/top_level.txt
 tests/test_adjustment_service.py
+tests/test_api_e2e_and_export.py
 tests/test_collect_krx_data.py
 tests/test_collectors_and_validation.py
 tests/test_dashboard_routes.py

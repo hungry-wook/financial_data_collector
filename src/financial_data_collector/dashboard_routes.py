@@ -48,6 +48,11 @@ async def get_prices(external_code: str, request: Request, date_from: str = Quer
     return request.app.state.repo.get_instrument_daily(external_code=external_code, date_from=date_from, date_to=date_to, limit=limit, offset=offset)
 
 
+@router.get("/api/v1/benchmarks")
+async def get_benchmarks(request: Request):
+    return request.app.state.repo.list_benchmark_series()
+
+
 @router.get("/api/v1/benchmarks/{index_code}/daily")
 async def get_benchmark_series(index_code: str, request: Request, series_name: str = Query(""), date_from: str = Query(""), date_to: str = Query(""), limit: int = Query(250, ge=1, le=2000), offset: int = Query(0, ge=0)):
     return request.app.state.repo.get_benchmark_daily(index_code=index_code, series_name=series_name, date_from=date_from, date_to=date_to, limit=limit, offset=offset)
@@ -57,6 +62,11 @@ async def get_benchmark_series(index_code: str, request: Request, series_name: s
 async def get_calendar(request: Request, market_codes: str = Query(...), date_from: str = Query(...), date_to: str = Query(...)):
     codes = [code.strip().upper() for code in market_codes.split(",") if code.strip()]
     return request.app.state.repo.get_calendar(codes, date_from, date_to)
+
+
+@router.get("/api/v1/adjustments/coverage")
+async def get_adjustment_coverage(request: Request, date_from: str = Query(...), date_to: str = Query(...), as_of_date: str = Query("9999-12-31")):
+    return request.app.state.repo.get_adjustment_coverage(date_from=date_from, date_to=date_to, as_of_date=as_of_date)
 
 
 @router.get("/api/v1/dashboard/summary")
